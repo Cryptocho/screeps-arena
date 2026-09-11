@@ -18,9 +18,9 @@ DSH 迭代激进，插件 API（client slots / cordis patch / dsh-tools / Config
 | Agent 运行时 | 用 Pi SDK（`@earendil-works/pi-coding-agent` 0.85.x），spike 已验证可行 |
 | Node | 22 LTS，fnm 供给（`.nvmrc`=22，engines `>=22.19 <23`）；系统 v26 不可用（native ABI） |
 | 技术栈 | 授权 Agent 选型：Fastify 5 + zod + React 18 + Vite + vitest + tsdown |
+| 容器化 | 官方 compose 双服务（app + screeps）作为**推荐部署形态**（M2+）；开发/CI bare-metal；managed 模式保留给本地开发 |
 
 > 归档说明：本文档为 M0 历史计划；前端实际落地为 **React 19**（见 package.json 与 plan-M1），此处的 18 为当时预估。
-| 容器化 | 官方 compose 双服务（app + screeps）作为**推荐部署形态**（M2+）；开发/CI bare-metal；managed 模式保留给本地开发 |
 
 ## 3. 范围
 
