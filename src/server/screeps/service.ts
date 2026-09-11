@@ -270,6 +270,29 @@ export class ScreepsService {
     return { lines: body.lines ?? [], cursor: body.cursor ?? 0, bound: body.bound ?? false }
   }
 
+  /** 以指定用户身份执行 console 表达式（官方 /api/user/console 通道）。返回 'ok' 或 HTTP 状态。 */
+  async runConsoleAs(username: string, expression: string): Promise<string> {
+    const token = await this.getToken(username)
+    const { baseUrl } = await this.ensureRunning()
+    const res = await fetch(`${baseUrl}/api/user/console`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-username': username, 'x-token': token },
+      body: JSON.stringify({ expression }),
+    })
+    return res.status === 200 ? 'ok' : `HTTP ${res.status}`
+  }
+
+  /** 指定房间的对象投影（mod roomObjects 命令；视野判定与观战地图用）。 */
+  async getRoomObjects(room: string): Promise<Array<{ type: string; x: number; y: number; user?: string | null; name?: string; hits?: number; store?: Record<string, number> }>> {
+    if (!/^[WE]\d+[NS]\d+$/.test(room)) throw new Error(`getRoomObjects: invalid room name ${room}`)
+    const body = (await this.arenaFetch('/api/arena/system', {
+      method: 'POST',
+      body: JSON.stringify({ cmd: 'roomObjects', value: room }),
+    })) as { ok: boolean; objects?: Array<{ type: string; x: number; y: number; user?: string | null }> }
+    if (body.ok !== true) throw new Error(`getRoomObjects failed`)
+    return body.objects ?? []
+  }
+
   private async getToken(username: string): Promise<string> {
     const body = (await this.arenaFetch('/api/arena/token', {
       method: 'POST',

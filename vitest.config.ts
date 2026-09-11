@@ -20,6 +20,8 @@ export default defineConfig({
   test: {
     // 白名单式 include：绝不允许默认 glob 扫到 reference/（旧仓库 100+ 测试文件，依赖不可用）
     include: ['src/**/*.test.ts', 'tests/**/*.test.ts'],
+    // live/smoke 独立 lane：默认 npm test 不跑（真实私服安装 ≈6 分钟 + 需 OPENROUTER_API_KEY）
+    exclude: ['**/node_modules/**', '**/reference/**', 'tests/*.live.it.test.ts', 'tests/*.smoke.it.test.ts'],
     testTimeout: 30_000,
     hookTimeout: 30_000,
   },
