@@ -132,7 +132,13 @@ M1 完成后产品形态首次完整：**Agent 对战、人类观战**。
 
 - M2：compose 双服务（app + screeps，node:22 镜像）、数据卷、地图公平性距离校验重掷、
   interrupted 恢复、席位目录名碰撞加固（M0 审查建议 1）、**真实计分**（world 快照 →
-  胜负判定；M1 的 settle 仍是 manual/roundsExhausted → draw，M0 语义）。
+  胜负判定；M1 的 settle 仍是 manual/roundsExhausted → draw，M0 语义）、
+  **前端 UI 样式体系**（见下）、WS console 流（M1 为 2s 轮询）。
+- **前端样式（诚实的范围声明）**：M1 的 S5 判据是「三视图能观察到基础功能」——
+  该判据已达成（浏览器逐项实点实截验收）；但**表现层是未做**：当前只有
+  `fontFamily: monospace` + 一个背景色，无 CSS 体系/布局框架/组件库。
+  M1 **从未把「观感/样式」列为验收判据**，故不属漏做；样式设计归 M2，
+  届时可一并处理地图 canvas 在 mock 世界无房间时的占位态。
 - M3+：锦标赛/回放/历史、arena-blitz 镜像克隆、房间可见性精确化。
 
 ## 7. 审查历史

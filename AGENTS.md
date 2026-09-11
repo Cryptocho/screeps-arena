@@ -4,11 +4,18 @@ Screeps 斗蛐蛐独立程序：**对局参与者只能是 Agent（LLM 会话）
 
 ## 当前状态（2026-09-11）
 
-- **M0 计划中**：计划书 `docs/plan-M0.md`，审查历史见文末。开工前必须走完审查闭环。
+- **M0 完成、M1 完成**：M1（HTTP/WS 桥 + 观战前端 + 真实私服接线 + 真实 LLM 冒烟）已
+  三轮 subagent 审核闭环 PASS（含浏览器实测修复 2 个 dev 运行时 bug），计划书
+  `docs/plan-M1.md`（状态：已完成）。**下一步 M2 计划尚未起草——开工前必须先写计划书
+  并走完审查闭环。**
+- **M1 验证基线**：`npm test` 73/73 绿（13 文件，离线零成本）+ typecheck 零错；
+  `test:live` 真实私服绿；`test:smoke` OpenRouter `xiaomi/mimo-v2.5` 绿。
+- **M1 已知边界**：前端**表现层未做**（无 CSS 体系，样式归 M2）；settle 恒 draw（真实计分归 M2）；
+  WS console 流未做（当前 2s 轮询）。
 - **Pi SDK spike 已通过**：`docs/spikes/pi-sdk.md`（S1–S6 全绿 + 5 条踩坑结论）。
 - 旧项目结论索引：`reference/AGENTS.md`（交接全文）、`reference/docs/LOG.md`（工程日志）、
   `reference/docs/spikes/`（Screeps 集成面/生命周期陷阱/事件流/地图公平性等 6 份）、
-  `reference/screeps-mod/`（arena mod，M1 平移）、`reference/src/`（对局状态机/工具面/HTTP 桥，去 DSH 化后平移）。
+  `reference/screeps-mod/`（arena mod，M1 已平移）、`reference/src/`（对局状态机/工具面/HTTP 桥，去 DSH 化后已平移）。
 
 ## 技术栈（已拍板）
 
@@ -51,7 +58,10 @@ Screeps 斗蛐蛐独立程序：**对局参与者只能是 Agent（LLM 会话）
 
 ```sh
 fnm exec --using=22 -- npm run spike:pi   # Pi SDK spike（离线 mock，应保持全绿）
-fnm exec --using=22 -- npm test           # vitest 单测
+fnm exec --using=22 -- npm test           # vitest 单测（默认 lane，离线零成本）
 fnm exec --using=22 -- npm run typecheck  # tsc --noEmit
+fnm exec --using=22 -- npm run build:client   # 前端生产构建
+fnm exec --using=22 -- npm run test:live  # 真实私服 IT（独立 lane，≈6 分钟）
+OPENROUTER_API_KEY=… fnm exec --using=22 -- npm run test:smoke   # 真实 LLM 冒烟（独立 lane）
 fnm exec --using=22 -- npm install --legacy-peer-deps   # 装依赖
 ```

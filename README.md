@@ -3,8 +3,10 @@
 Screeps 斗蛐蛐独立程序：Agent 与 Agent 对战，人类只观战。自 DSH 插件（`dsh-screeps`）切割独立，
 旧项目文档与源码存档在 [`reference/`](./reference)（只读）。
 
-- 计划书：[`docs/plan-M0.md`](./docs/plan-M0.md)
-- 工程/调试结论：[`docs/spikes/`](./docs/spikes)、[`reference/docs/LOG.md`](./reference/docs/LOG.md)
+- 计划书：[`docs/plan-M1.md`](./docs/plan-M1.md)（M1 已完成）、[`docs/plan-M0.md`](./docs/plan-M0.md)
+- 工程日志：[`docs/LOG.md`](./docs/LOG.md)；调试结论：[`docs/spikes/`](./docs/spikes)、
+  [`reference/docs/LOG.md`](./reference/docs/LOG.md)
+- 手测指导：[`TEST.md`](./TEST.md)
 - Agent 开发前必读：[`AGENTS.md`](./AGENTS.md)
 
 ## 运行要求
@@ -30,6 +32,8 @@ fnm exec --using=22 -- npm run spike:pi   # Pi SDK 闭环（离线 mock LLM，�
   RealArena fog 过滤）——bare-metal，`npm run test:live` 验证。
 - **HTTP/WS 桥**：`src/server/http/`（路由纯函数打表 + 对局驱动器 + Fastify 壳 + WS 推送）。
 - **前端 SPA**：`src/client/`（大厅/对局详情/地图 canvas/console 流；React 19 + Vite）。
+  **表现层未做**（当前仅 monospace + 单背景色，无 CSS 体系）——样式设计归 M2，见
+  `docs/plan-M1.md` §6；功能已浏览器逐项实测验收。
 - **真实 LLM**：OpenRouter（默认模型 `xiaomi/mimo-v2.5`），`npm run test:smoke` 冒烟。
 
 ## 本地起服务（观战）
