@@ -18,6 +18,7 @@ function fakeServices(): ArenaHttpServices & { machines: Map<string, MatchMachin
       return m
     },
     getWorld: async () => ({ ok: true, gameTime: 100, users: [] }),
+    consoleSince: async () => ({ lines: [], cursor: 0, bound: true }),
     getTerrain: async (rooms) => ({ terrain: Object.fromEntries(rooms.map((r) => [r, '0'.repeat(2500)])) }),
   }
 }

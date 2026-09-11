@@ -19,6 +19,7 @@ const services: ArenaHttpServices = {
     return m
   },
   getWorld: async () => ({ ok: true, gameTime: 42, users: [] }),
+  consoleSince: async () => ({ lines: [], cursor: 0, bound: true }),
   getTerrain: async (rooms) => ({ terrain: Object.fromEntries(rooms.map((r) => [r, '1'.repeat(2500)])) }),
 }
 

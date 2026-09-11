@@ -1,0 +1,62 @@
+/** 前端 API 客户端（fetch + WS 订阅；不引状态库）。 */
+import type { MatchView, WorldSnapshot } from '../shared/types.js'
+
+export async function fetchMatches(): Promise<MatchView[]> {
+  const res = await fetch('/api/matches')
+  const body = (await res.json()) as { matches: MatchView[] }
+  return body.matches
+}
+
+export async function fetchMatch(id: string): Promise<MatchView> {
+  const res = await fetch(`/api/matches/${encodeURIComponent(id)}`)
+  if (!res.ok) throw new Error(`match ${id}: HTTP ${res.status}`)
+  return (await res.json()) as MatchView
+}
+
+export async function createMatch(input: {
+  players: Array<{ seatId: string; username: string }>
+  config?: Partial<MatchView['config']>
+}): Promise<MatchView> {
+  const res = await fetch('/api/matches', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  if (!res.ok) throw new Error(`create failed: HTTP ${res.status} ${await res.text()}`)
+  return (await res.json()) as MatchView
+}
+
+export async function startMatch(id: string): Promise<void> {
+  const res = await fetch(`/api/matches/${encodeURIComponent(id)}/start`, { method: 'POST' })
+  if (!res.ok) throw new Error(`start failed: HTTP ${res.status}`)
+}
+
+export async function settleMatch(id: string): Promise<void> {
+  const res = await fetch(`/api/matches/${encodeURIComponent(id)}/settle`, { method: 'POST' })
+  if (!res.ok) throw new Error(`settle failed: HTTP ${res.status}`)
+}
+
+export async function fetchWorld(): Promise<WorldSnapshot> {
+  const res = await fetch('/api/world')
+  return (await res.json()) as WorldSnapshot
+}
+
+export async function fetchTerrain(rooms: string[]): Promise<Record<string, string>> {
+  const res = await fetch(`/api/terrain?rooms=${encodeURIComponent(rooms.join(','))}`)
+  const body = (await res.json()) as { terrain: Record<string, string> }
+  return body.terrain
+}
+
+/** WS 订阅（对局状态流）。返回取消函数。 */
+export function subscribeMatch(id: string, onMessage: (msg: Record<string, unknown>) => void): () => void {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+  const ws = new WebSocket(`${proto}://${location.host}/ws/matches/${encodeURIComponent(id)}`)
+  ws.onmessage = (ev) => {
+    try {
+      onMessage(JSON.parse(String(ev.data)) as Record<string, unknown>)
+    } catch {
+      /* 坏帧丢弃 */
+    }
+  }
+  return () => ws.close()
+}

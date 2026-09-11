@@ -17,6 +17,8 @@ export interface ArenaHttpServices {
   createMatch(input: { config?: Partial<MatchConfig>; players: Array<{ seatId: string; username: string }> }): MatchMachine
   getWorld(): Promise<unknown>
   getTerrain(rooms: string[]): Promise<{ terrain: Record<string, string> }>
+  /** 逐用户 console 增量（游标由服务层维护）。 */
+  consoleSince(username: string, since?: number): Promise<{ lines: unknown[]; cursor: number; bound: boolean }>
 }
 
 export interface ArenaRequest {
@@ -90,6 +92,22 @@ export async function handleArenaRequest(services: ArenaHttpServices, req: Arena
       }
     }
     return bad(405, `method ${method} not allowed`)
+  }
+
+  const consolePath = /^\/api\/matches\/([^/]+)\/console$/.exec(pathname)
+  if (consolePath) {
+    if (method !== 'GET') return bad(405, `method ${method} not allowed`)
+    const id = decodeURIComponent(consolePath[1]!)
+    const m = services.match(id)
+    if (!m) return bad(404, `match ${id} not found`)
+    const user = req.query?.user ?? ''
+    if (!USERNAME_RE.test(user)) return bad(400, 'user required')
+    const since = req.query?.since !== undefined ? Number(req.query.since) : undefined
+    try {
+      return ok(await services.consoleSince(user, since))
+    } catch (err) {
+      return bad(502, String(err instanceof Error ? err.message : err))
+    }
   }
 
   const matchPath = /^\/api\/matches\/([^/]+)(\/(start|settle))?$/.exec(pathname)

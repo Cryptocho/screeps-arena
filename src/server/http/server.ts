@@ -89,6 +89,10 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
     const r = await routeHandler({ method: 'POST', url: req.url })
     return reply.code(r.status).send(r.json)
   })
+  app.get('/api/matches/:id/console', async (req, reply) => {
+    const r = await routeHandler({ method: 'GET', url: req.url })
+    return reply.code(r.status).send(r.json)
+  })
   app.get('/api/world', async (req, reply) => {
     const r = await routeHandler({ method: 'GET', url: req.url })
     return reply.code(r.status).send(r.json)
