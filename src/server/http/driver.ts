@@ -1,0 +1,112 @@
+/**
+ * 对局驱动器（M1/S4，plan-M1 一审修复项 2）——M0 遗留接线的落点：
+ *   ① 常驻 interval → machine.advance(真实时钟)（running 周期到点 / roundBreak 超时兜底）；
+ *   ② MatchEvent → 席位 AgentRunner.prompt() 唤醒（round_break → 战报唤醒、
+ *      started/round_resume → 开跑通知）。
+ *
+ * 语义（二审非阻塞建议 1，实现期钉死）：
+ *   - interval 粒度 500ms（advance 幂等，错过周期不补跑——advance 内部按 now 判定）；
+ *   - 唤醒串行：每席位一次只有一个 prompt 在飞（AgentRunner 并发拒绝兜底）；
+ *   - 唤醒失败不抛出驱动循环（记 errors 侧日志回调），下一轮 advance 重试由状态机语义保证
+ *     （roundBreak 期未 ready 的席位在超时兜底前仍会被再次唤醒——由本类 pending 去重）。
+ */
+import type { MatchMachine, MatchEvent } from '../match/machine.js'
+
+/** 唤醒通道（AgentRunner.prompt 的结构化最小面）。 */
+export interface SeatWaker {
+  prompt(seatId: string, text: string): Promise<void>
+}
+
+export interface MatchDriverOptions {
+  /** 检查周期（ms，默认 500）。 */
+  intervalMs?: number
+  /** 唤醒文本构造（可注入定制；默认 world-rounds 语义）。 */
+  wakeText?: (event: MatchEvent, machine: MatchMachine) => string
+  log?: (msg: string) => void
+}
+
+export class MatchDriver {
+  private readonly machines = new Set<MatchMachine>()
+  private readonly wakers = new Map<string, SeatWaker>() // seatId → waker
+  private readonly pendingWake = new Set<string>() // `${matchId}:${seatId}:${round}` 去重
+  private timer: ReturnType<typeof setInterval> | undefined
+  private readonly intervalMs: number
+  private readonly wakeText: NonNullable<MatchDriverOptions['wakeText']>
+  private readonly log: (msg: string) => void
+  /** 驱动循环内的错误（观测口；不中断循环）。 */
+  readonly lastError: { at: number; message: string } | null = null
+
+  constructor(opts: MatchDriverOptions = {}) {
+    this.intervalMs = opts.intervalMs ?? 500
+    this.wakeText =
+      opts.wakeText ??
+      ((event, m) => {
+        const round = 'round' in event ? event.round : m.state.roundIndex
+        if (event.type === 'round_break') {
+          return (
+            `Match ${m.id}: round ${round} has ended. The world is paused at the round boundary.\n` +
+            'Review your situation and submit your next-round code with submit_code (commit = ready). ' +
+            'The round resumes automatically once all seats are ready.'
+          )
+        }
+        return `Match ${m.id}: round ${round} is starting. Your code is live — play the round.`
+      })
+    this.log = opts.log ?? (() => {})
+  }
+
+  /** 注册对局（接线 MatchEvent → 唤醒）。幂等。 */
+  watch(machine: MatchMachine, wakers: Record<string, SeatWaker>): void {
+    this.machines.add(machine)
+    for (const [seatId, waker] of Object.entries(wakers)) this.wakers.set(seatId, waker)
+  }
+
+  /** 启动常驻循环。幂等。 */
+  start(): void {
+    if (this.timer) return
+    this.timer = setInterval(() => {
+      void this.tick()
+    }, this.intervalMs)
+    this.timer.unref?.()
+  }
+
+  stop(): void {
+    if (this.timer) {
+      clearInterval(this.timer)
+      this.timer = undefined
+    }
+  }
+
+  /** 单拍（测试口）：advance 全部对局 + 消费事件唤醒。 */
+  async tick(): Promise<void> {
+    for (const m of this.machines) {
+      try {
+        m.advance()
+      } catch (err) {
+        this.log(`advance ${m.id} failed: ${String(err)}`)
+      }
+    }
+  }
+
+  /** 事件处理（server.ts 接线：machine 的 onEvent → 本方法）。 */
+  async onEvent(machine: MatchMachine, event: MatchEvent): Promise<void> {
+    const round = 'round' in event ? event.round : machine.state.roundIndex
+    if (event.type === 'settled') {
+      this.machines.delete(machine)
+      return
+    }
+    for (const p of machine.players) {
+      const key = `${machine.id}:${p.seatId}:${round}:${event.type}`
+      if (this.pendingWake.has(key)) continue
+      this.pendingWake.add(key)
+      const waker = this.wakers.get(p.seatId)
+      if (!waker) continue
+      try {
+        await waker.prompt(p.seatId, this.wakeText(event, machine))
+      } catch (err) {
+        this.log(`wake ${p.seatId} (${event.type}) failed: ${String(err)}`)
+      } finally {
+        this.pendingWake.delete(key)
+      }
+    }
+  }
+}
