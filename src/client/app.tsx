@@ -57,6 +57,18 @@ function Lobby(props: {
   const [seatB, setSeatB] = useState('seat-b')
   const [roundMs, setRoundMs] = useState(60_000)
   const [busy, setBusy] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+  // start/settle 失败必须显式反馈（否则静默 unhandled rejection，用户点了没反应）
+  const runAction = async (fn: () => Promise<void>) => {
+    try {
+      setActionError(null)
+      await fn()
+    } catch (err) {
+      setActionError(String(err instanceof Error ? err.message : err))
+    } finally {
+      props.onChanged()
+    }
+  }
   return (
     <div>
       <fieldset style={{ marginBottom: 16 }}>
@@ -79,6 +91,7 @@ function Lobby(props: {
           创建
         </button>
       </fieldset>
+      {actionError && <p style={{ color: '#e07070' }}>{actionError}</p>}
       <table cellPadding={4}>
         <thead>
           <tr><th>id</th><th>phase</th><th>round</th><th>players</th><th>winner</th><th></th></tr>
@@ -93,8 +106,8 @@ function Lobby(props: {
               <td>{m.winner?.kind === 'draw' ? 'draw' : m.winner?.kind === 'seat' ? m.winner.seatId : ''}</td>
               <td>
                 <button onClick={() => props.onOpen(m.id)}>查看</button>{' '}
-                {m.phase === 'creating' && <button onClick={async () => { await startMatch(m.id); props.onChanged() }}>start</button>}
-                {m.phase !== 'settled' && <button onClick={async () => { await settleMatch(m.id); props.onChanged() }}>settle</button>}
+                {m.phase === 'creating' && <button onClick={() => void runAction(() => startMatch(m.id))}>start</button>}
+                {m.phase !== 'settled' && <button onClick={() => void runAction(() => settleMatch(m.id))}>settle</button>}
               </td>
             </tr>
           ))}

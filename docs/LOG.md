@@ -1,5 +1,31 @@
 # 工程日志（倒序）
 
+## 2026-09-11 M1 浏览器观感验收（发现并修复 2 个 dev 运行时 bug）
+
+**背景**：用户指出「有浏览器工具能截图就该自己验收，别甩给用户」。用浏览器工具实跑 dev-server +
+vite dev，逐项实点实截 TEST.md 第 2 节的 6 个观感项——**当场抓到 2 个 `build:client` 覆盖不到的
+dev 运行时 bug**（构建期不走 proxy/不执行交互，故 typecheck + vite build 全绿也漏掉）。
+
+| # | 症状 | 根因 | 修法 |
+|---|---|---|---|
+| A | 打开首页**整页白屏**（标题在、内容不渲染，console 无报错） | `vite.config.ts` proxy 键 `'/api'` 是**前缀匹配**，把客户端源模块请求 `/api.ts`（`import './api.js'` 的解析结果）也劫持给 8787 后端 → 404 → 模块加载失败 | proxy 改正则 `'^/api/'`、`'^/ws/'`（锚定路径命名空间） |
+| B | 大厅 start/settle 失败**静默无提示**（点了没反应，仅 unhandled rejection） | `app.tsx` 的 `onClick={async () => { await startMatch(...); ... }}` 无 catch | 抽 `runAction` 包装（catch → `actionError` 状态 → 红字显示） |
+
+**浏览器实测证据（截图为凭）**：
+- 首页深色界面 + 标题 + 大厅 tab + 创建表单 + 空列表表头（修复 A 后不再白屏）。
+- 创建对局 → 列表行 `creating / -1 / seat-a… vs seat-b…`。
+- 点 start（未提交代码）→ 红字 `start failed: HTTP 409`，phase 不变（修复 B 后可见）。
+- 查看详情 → 状态行 `creating · round -1` + 玩家榜（ready/code 空、rooms/rcl/spawns/creeps 全 0）。
+- settle → `settled / draw`，操作列只剩「查看」。
+- console tab 切换 seat-a/seat-b → `(no output)`。
+
+**验证**：修后 `npm test` 72/72 绿 + `typecheck` 零错 + `build:client` 零错；**浏览器 6 项复验通过**。
+孤儿进程/端口已精确清理（`pgrep -af` 预览后按 PID）。
+
+**教训**：dev 运行时行为（proxy 匹配、交互错误处理）**必须用浏览器实测**，typecheck 与
+生产构建覆盖不到这些路径。
+
+
 ## 2026-09-11 M1 复审修复（subagent 审查 FAIL → 7 项全修）
 
 **背景**：M1 成果送 subagent 审查（范围 `a55d28b..7679a3d`），结论 **FAIL**，7 项。

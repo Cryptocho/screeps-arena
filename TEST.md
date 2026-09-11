@@ -25,18 +25,24 @@ fnm exec --using=22 -- npm run dev:client
 # 预期输出：VITE ready，Local: http://127.0.0.1:5173/
 ```
 
-## 2. 浏览器验收项（需要您测）
+## 2. 浏览器验收项（已由 Agent 用浏览器工具实测完成，2026-09-11）
 
-打开 http://127.0.0.1:5173
+打开 http://127.0.0.1:5173 —— 下表 6 项已逐项实点实截验证，**您只需按需复查观感**：
 
-| # | 操作 | 预期 |
+| # | 操作 | 实测结果 |
 |---|---|---|
-| 1 | 打开首页 | 深色界面，标题「Screeps Arena」，默认大厅 tab |
-| 2 | 大厅创建表单：默认 seat-a/seat-b/60000ms，点「创建」 | 列表出现一行：phase=creating，players `seat-a… vs seat-b…` |
-| 3 | 点「start」（未提交代码） | 请求失败（409），列表不变（这是正确行为：全员提交才能 start） |
-| 4 | 点「查看」进对局详情 | 状态行 `creating · round -1`，玩家表 ready/code 列为空 |
-| 5 | 回大厅点「settle」 | phase 变 settled，winner 列显示 draw |
-| 6 | 对局详情页 | 玩家榜表格（rooms/rcl/spawns/creeps 全 0——mock 世界无数据）、console tab 切换显示 `(no output)` |
+| 1 | 打开首页 | ✅ 深色界面，标题「Screeps Arena」，大厅 tab |
+| 2 | 创建（seat-a/seat-b/60000ms） | ✅ 列表出现行：creating / round=-1 / `seat-a… vs seat-b…` |
+| 3 | 点 start（未提交代码） | ✅ 红色提示 `start failed: HTTP 409`，phase 不变 |
+| 4 | 点查看进详情 | ✅ 状态行 `creating · round -1`，玩家表 ready/code 为空 |
+| 5 | 回大厅点 settle | ✅ phase→settled，winner→draw，操作列只剩「查看」 |
+| 6 | 详情页 console tab | ✅ 切换 seat-a/seat-b，显示 `(no output)` |
+
+**实测中发现并已修复的 2 个 dev 运行时 bug**（`build:client` 覆盖不到，只有浏览器能暴露）：
+1. **白屏**：`vite.config.ts` 的 proxy `'/api'` 是前缀匹配，把客户端源模块 `/api.ts`
+   也劫持给 8787 后端 → 404 → 模块加载失败 → 整页白屏。改为正则 `^/api/`、`^/ws/`。
+2. **静默失败**：大厅 start/settle 的 `await` 无 catch，失败时无任何提示（unhandled rejection）。
+   已加错误显示（实测点 start 显示 `start failed: HTTP 409`）。
 
 **已知边界（M1 范围内）**：地图 canvas 在 mock 世界无房间数据时不显示（真实私服接线后
 `/api/world` 返回 rooms 才渲染）；console 流是 2s 轮询增量（WS console 流 M2）。
