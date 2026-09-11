@@ -1,6 +1,6 @@
 # plan-M1 — HTTP/WS 桥 + 观战前端 + 真实私服接线 + 真实 LLM 冒烟
 
-状态：**送审中**（审查历史见文末）
+状态：**已完成（M1 全部落地）**；审查历史见文末（含 M1 复审修复记录）
 前置：M0 完成（31/31 测试绿 + typecheck 零错；S4 IT 2 mock 席位 1 轮闭环；审查 PASS）
 决策记录（用户拍板，2026-09-11）：
 
@@ -69,7 +69,7 @@ M1 完成后产品形态首次完整：**Agent 对战、人类观战**。
   `machine.advance(真实时钟)`（running 周期到点 / roundBreak 超时兜底）；MatchEvent →
   席位 `AgentRunner.prompt()` 唤醒接线（`round_break` → 战报唤醒、`started`/`round_resume`
   → 开跑通知）。真实时钟下的超时兜底触发路径加 IT 断言（防接线引入语义漂移）。
-- **S5 前端 SPA**（`src/client/`）：React 18 + Vite。三视图：
+- **S5 前端 SPA**（`src/client/`）：React 19 + Vite。三视图：
   ① **大厅**——对局列表（phase/round/玩家/胜负）+ 创建表单（preset/roundMs/maxRounds）；
   ② **对局详情**——状态时间线、玩家榜（world 快照投影：rooms/RCL/spawns/creeps）、
   console 流（逐用户 tab，WS 增量）；
@@ -77,6 +77,8 @@ M1 完成后产品形态首次完整：**Agent 对战、人类观战**。
   状态管理最小化（fetch + WS 订阅，不引状态库）。
 - **S6 真实 LLM 冒烟**：S4 IT 换 OpenRouter baseUrl + 默认模型 `xiaomi/mimo-v2.5` 跑一次真链路（1 局 2 席位 1 轮），
   验证 mock 与真实 provider 的 SSE/工具调用行为差异；差异记入 LOG。
+  **定位（M1 复审施工决定）**：本 lane 是「真实 provider 行为探针」——钉 SSE / 工具调用行为；
+  「代码真落私服」由 `test:live` 承担（不重复跑 6 分钟私服安装）。
 - **S7 收尾**：LOG 条目、README、TEST.md（浏览器观战验收项——需用户手测的唯一部分，
   命令逐条实测后写入）。
 
@@ -94,7 +96,7 @@ M1 完成后产品形态首次完整：**Agent 对战、人类观战**。
 | S3 | 真实 ArenaBackend | S1 S2 | 真实私服 IT：bind→submit→console→report（fog 过滤断言） |
 | S4 | HTTP/WS 桥 | S3 | 路由纯函数打表单测 + supertest 级 IT + WS 集成 IT |
 | S5 | 前端 SPA | S4 | 组件单测（vitest+testing-library）+ build 零错 + 对局详情/地图投影纯函数单测 |
-| S6 | 真实 LLM 冒烟 | S3 S4 | OpenRouter 真链路 IT（1 局 2 席位 1 轮，成本上限 1 局） |
+| S6 | 真实 LLM 冒烟 | S3 S4 | OpenRouter 真链路 IT（1 局 2 席位 1 轮，成本上限 1 局；provider 行为探针，真落私服由 S3 live lane 承担） |
 | S7 | 收尾 | 全部 | 全量测试绿 + typecheck 零错 + LOG/README/TEST.md |
 
 串行推进（每步做完汇报）；S1/S2 是关键路径（私服起不来后面全堵）。
@@ -107,8 +109,9 @@ M1 完成后产品形态首次完整：**Agent 对战、人类观战**。
   getWorld 断言用户/房间出现→consoleOutput 游标。标记为独立 lane（`npm run test:live`），
   默认 `npm test` 不跑（避免 CI/离线环境挂）。
 - **HTTP IT**：真实 Fastify listen（127.0.0.1 随机端口）+ fetch/WS 客户端断言。
-- **真实 LLM 冒烟 IT**：OpenRouter 真链路，断言工具调用被真实执行、代码真落私服、
-  状态机走完 1 轮。同样独立 lane（`test:smoke`），需要 `OPENROUTER_API_KEY`。
+- **真实 LLM 冒烟 IT**：OpenRouter 真链路，断言 `submit_code` **工具调用确实发生**（按 `tool_end`
+  事件计数 + 有界重试）× 状态机闭环。**「代码真落私服」由上面的真实私服 IT（`test:live`）承担**，
+  本 lane 只做 provider 行为探针，不重复私服安装成本。独立 lane（`test:smoke`），需 `OPENROUTER_API_KEY`。
 - **公平边界**：桥端点无身份通道（负向打表）；report fog 过滤负向测试。
 - 全部命令真实跑通后记入 `docs/LOG.md`。
 
@@ -149,3 +152,13 @@ M1 完成后产品形态首次完整：**Agent 对战、人类观战**。
   （限流/格式差异 → 记 LOG 不阻塞 S7）；S2 打表加「addWalledNeighbors 早于
   updateTerrainData」顺序断言（arena-mod.cjs L1329-1337 B4 结论）。
 - 状态：**PASS，等待用户确认开工**。
+
+### M1 实施后复审（subagent，2026-09-11）
+
+- 第一轮：**FAIL**，7 项（默认 lane 扫到真实 LLM 冒烟致红 / 冒烟断言无回归性 / 驱动器未接线 /
+  report 未消费事件流 / `visibleRooms` 死代码 / 冒烟定位与 §4 矛盾 / 文档漂移）。已全修
+  （见 `docs/LOG.md`「M1 复审修复」条目与 commit `836e596`）。
+- 第二轮：功能项 1–5 独立核实修实；第 6/7 项文档一致性问题残留于本计划书自身
+  （§2 S6、§4 冒烟判据仍写「真落私服」；S5 仍写 React 18）→ 已在本文件订正
+  （S6 定位澄清 + §4 判据改「工具调用确实发生」+ React 19 + 状态线更新）。
+- 状态：**M1 完成**。

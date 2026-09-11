@@ -7,7 +7,7 @@
  * 语义（二审非阻塞建议 1，实现期钉死）：
  *   - interval 粒度 500ms（advance 幂等，错过周期不补跑——advance 内部按 now 判定）；
  *   - 唤醒串行：每席位一次只有一个 prompt 在飞（AgentRunner 并发拒绝兜底）；
- *   - 唤醒失败不抛出驱动循环（记 errors 侧日志回调），下一轮 advance 重试由状态机语义保证
+ *   - 唤醒失败不抛出驱动循环（经 log 回调记录），下一轮 advance 重试由状态机语义保证
  *     （roundBreak 期未 ready 的席位在超时兜底前仍会被再次唤醒——由本类 pending 去重）。
  */
 import type { MatchMachine, MatchEvent } from '../match/machine.js'
@@ -34,8 +34,6 @@ export class MatchDriver {
   private readonly intervalMs: number
   private readonly wakeText: NonNullable<MatchDriverOptions['wakeText']>
   private readonly log: (msg: string) => void
-  /** 驱动循环内的错误（观测口；不中断循环）。 */
-  readonly lastError: { at: number; message: string } | null = null
 
   constructor(opts: MatchDriverOptions = {}) {
     this.intervalMs = opts.intervalMs ?? 500
