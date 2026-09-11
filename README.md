@@ -29,7 +29,7 @@ fnm exec --using=22 -- npm run spike:pi   # Pi SDK 闭环（离线 mock LLM，�
 - **真实私服**：`src/server/screeps/`（ScreepsService 七面 + arena-mod 平移裁剪 +
   RealArena fog 过滤）——bare-metal，`npm run test:live` 验证。
 - **HTTP/WS 桥**：`src/server/http/`（路由纯函数打表 + 对局驱动器 + Fastify 壳 + WS 推送）。
-- **前端 SPA**：`src/client/`（大厅/对局详情/地图 canvas/console 流；React 18 + Vite）。
+- **前端 SPA**：`src/client/`（大厅/对局详情/地图 canvas/console 流；React 19 + Vite）。
 - **真实 LLM**：OpenRouter（默认模型 `xiaomi/mimo-v2.5`），`npm run test:smoke` 冒烟。
 
 ## 本地起服务（观战）

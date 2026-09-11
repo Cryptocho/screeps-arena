@@ -38,6 +38,8 @@ export function visibleRooms(
 export class RealArena implements SeatRegistry, ArenaBackend {
   private readonly users = new Map<string, string>()
   private readonly consoleCursors = new Map<string, number>()
+  /** 事件流增量游标（ring 下标；report 只回增量，对齐 report 工具「deltas only」语义）。 */
+  private readonly eventCursors = new Map<string, number>()
   private readonly opts: RealArenaOptions
 
   constructor(
@@ -68,6 +70,7 @@ export class RealArena implements SeatRegistry, ArenaBackend {
   unbindUser(seatId: string): void {
     this.users.delete(seatId)
     this.consoleCursors.delete(seatId)
+    this.eventCursors.delete(seatId)
   }
 
   resolveUser(seatId: string): string | undefined {
@@ -97,19 +100,31 @@ export class RealArena implements SeatRegistry, ArenaBackend {
     return msgs.length > 0 ? msgs.join('\n') : 'ok'
   }
 
+  /**
+   * 候选房间（视野判定的扫描域）：world 快照里出现过的所有房间（己方 owned ∪ 对手 owned）。
+   * 真实世界里对手 creep 进入我方房 → 该房已在候选内（我方 owned），由 roomObjects 的 user
+   * 判定纳入视野；我方 creep 进入对手房 → 该房也在候选内（对手 owned），同样可判定。
+   */
+  private candidateRooms(world: Awaited<ReturnType<ScreepsService['getWorld']>>): string[] {
+    const rooms = new Set<string>()
+    for (const u of world.users) for (const r of u.rooms ?? []) rooms.add(r.room)
+    return [...rooms]
+  }
+
   /** 战报投影：world 快照（公开）∪ 己方完整视图 ∪ 有视野房间对手动向（fog 过滤，不透视）。 */
   async report(username: string): Promise<string> {
     const world = await this.svc.getWorld()
     const me = world.users.find((u) => u.username === username)
     const ownedRooms = (me?.rooms ?? []).map((r) => r.room)
-    // 视野判定：owned rooms ∪ 己方对象所在房间（逐房 roomObjects；房间数 ≤ owned+creep 房，量小）
-    const visible = new Set<string>(ownedRooms)
-    for (const room of ownedRooms) {
-      const objects = await this.svc.getRoomObjects(room)
-      for (const o of objects) {
-        if (o.user && o.user === username) visible.add(room)
-      }
+    // 视野判定：扫描候选房间的 roomObjects，交给 visibleRooms（owned ∪ 己方对象所在房间）
+    const candidates = this.candidateRooms(world)
+    const objects: Array<{ room: string; user?: string | null; type: string }> = []
+    for (const room of candidates) {
+      const roomObjects = await this.svc.getRoomObjects(room)
+      for (const o of roomObjects) objects.push({ room, user: o.user ?? null, type: o.type })
     }
+    const visible = visibleRooms(ownedRooms, objects, username)
+
     const lines: string[] = []
     lines.push(`gameTime=${world.gameTime}`)
     lines.push(
@@ -123,6 +138,33 @@ export class RealArena implements SeatRegistry, ArenaBackend {
         lines.push(`opponent ${u.username} visible in: ${opponentRooms.join(',')}`)
       }
     }
+    // 对手单位进入我方视野房（world 快照 owned rooms 未必反映）——用已采集 objects 判定存在性
+    const enemyPresence = new Set<string>()
+    for (const o of objects) {
+      if (o.user && o.user !== username && visible.has(o.room)) enemyPresence.add(o.user)
+    }
+    for (const enemy of [...enemyPresence].sort()) {
+      if (!world.users.some((u) => u.username === enemy)) continue
+      lines.push(`opponent ${enemy} units visible in your rooms`)
+    }
+    // 事件流（fog 过滤）：只保留有视野房间的事件；无视野房间的事件一律剥离（负向测试锚点）
+    const since = this.eventCursors.get(username) ?? 0
+    const raw = (await this.svc.system('eventLog', since)) as {
+      events?: Array<{ tick: number; eventsByRoom: Record<string, unknown[]> }>
+      cursor?: number
+      bound?: boolean
+    }
+    if (typeof raw?.cursor === 'number') this.eventCursors.set(username, raw.cursor)
+    const ring = Array.isArray(raw?.events) ? raw.events : []
+    const visibleEvents: string[] = []
+    for (const entry of ring) {
+      const visibleRoomsInEntry = Object.keys(entry.eventsByRoom ?? {}).filter((r) => visible.has(r))
+      for (const room of visibleRoomsInEntry) {
+        const n = entry.eventsByRoom[room]!.length
+        visibleEvents.push(`event tick ${entry.tick} room ${room}: ${n} event(s)`)
+      }
+    }
+    if (visibleEvents.length > 0) lines.push(...visibleEvents)
     lines.push(`visibleRooms: ${[...visible].sort().join(',') || '(none)'}`)
     return lines.join('\n')
   }

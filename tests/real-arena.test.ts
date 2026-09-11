@@ -11,6 +11,7 @@ function fakeSvc(overrides: Partial<Record<string, any>> = {}): ScreepsService {
     system: vi.fn(async (cmd: string, value?: unknown) => {
       if (cmd === 'generateRoom') return { generated: true }
       if (cmd === 'getTickDuration') return { tickDuration: '100' }
+      if (cmd === 'eventLog') return { events: [], cursor: typeof value === 'number' ? value : 0, bound: true }
       return { ok: true }
     }),
     createUser: vi.fn(async (input: { username: string }) => ({ id: 'u1', username: input.username })),
@@ -81,6 +82,8 @@ describe('RealArena（S3）', () => {
     const arena = new RealArena(svc, { rooms: {} })
     const text = await arena.report('agent_a')
     expect(text).toContain('visibleRooms: E5N5')
+    // 对手 agent_b 的 creep 进入我方视野房 E5N5 → 出现（仅存在性，不含坐标/资源）
+    expect(text).toContain('opponent agent_b units visible in your rooms')
   })
 
   it('visibleRooms：owned ∪ 己方对象所在房间（负向测试锚点）', () => {
@@ -91,6 +94,31 @@ describe('RealArena（S3）', () => {
       { room: 'E8N5', user: null, type: 'controller' },
     ], 'me')
     expect([...v].sort()).toEqual(['E5N5', 'E6N5'])
+  })
+
+  it('report：事件流 fog 过滤——无视野房间的事件不进战报（负向）', async () => {
+    const svc = fakeSvc({
+      system: vi.fn(async (cmd: string, value?: unknown) => {
+        if (cmd === 'eventLog') {
+          return {
+            events: [
+              { tick: 101, eventsByRoom: { E5N5: [{ event: 1, objectId: 'own1' }], E7N5: [{ event: 2, objectId: 'enemy1' }] } },
+            ],
+            cursor: 1,
+            bound: true,
+          }
+        }
+        if (cmd === 'generateRoom') return { generated: true }
+        if (cmd === 'getTickDuration') return { tickDuration: '100' }
+        return { ok: true }
+      }),
+    })
+    const arena = new RealArena(svc, { rooms: {} })
+    const text = await arena.report('agent_a')
+    // 有视野房间 E5N5 的事件出现
+    expect(text).toContain('event tick 101 room E5N5')
+    // 无视野房间 E7N5 的事件一律剥离
+    expect(text).not.toContain('room E7N5')
   })
 
   it('runConsole：官方通道 + ring 增量取回', async () => {

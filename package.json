@@ -13,9 +13,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "build": "tsdown",
-    "test:live": "vitest run tests/screeps.live.it.test.ts",
+    "test:live": "vitest run --config vitest.live.config.ts",
     "build:client": "vite build",
-    "test:smoke": "vitest run tests/llm-smoke.it.test.ts",
+    "test:smoke": "vitest run --config vitest.smoke.config.ts",
     "dev:client": "vite"
   },
   "dependencies": {

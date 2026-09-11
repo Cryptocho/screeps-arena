@@ -18,7 +18,7 @@ Screeps 斗蛐蛐独立程序：**对局参与者只能是 Agent（LLM 会话）
   工具 = `defineTool`（typebox）；周期唤醒 = 空闲后 `prompt()`（**不是** `followUp`，见 spike 结论 3）；
   自定义 provider 走 `models.json` + 显式 `getModel`（见 spike 结论 2）。
 - **后端**：Fastify 5 + `@fastify/websocket` + `@fastify/static` + zod。
-- **前端**：React 18 + Vite（M1 起）。
+- **前端**：React 19 + Vite（M1 起）。
 - **测试**：vitest；stub lane = mock models.json 指向进程内 mock OpenAI server（`scripts/spike-pi-sdk.ts` 装置复用）。
 - **npm 注意**：本机 npm 10.9.8 对 vitest 4 有 arborist bug，装依赖用 `--legacy-peer-deps`（spike 结论 5）。
 

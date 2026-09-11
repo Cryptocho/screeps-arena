@@ -27,8 +27,9 @@ export interface MatchDriverOptions {
 
 export class MatchDriver {
   private readonly machines = new Set<MatchMachine>()
-  private readonly wakers = new Map<string, SeatWaker>() // seatId → waker
-  private readonly pendingWake = new Set<string>() // `${matchId}:${seatId}:${round}` 去重
+  /** matchId → (seatId → waker)。per-match 归属：多对局并存时 waker 不互相覆盖。 */
+  private readonly wakers = new Map<string, Map<string, SeatWaker>>()
+  private readonly pendingWake = new Set<string>() // `${matchId}:${seatId}:${round}:${type}` 去重
   private timer: ReturnType<typeof setInterval> | undefined
   private readonly intervalMs: number
   private readonly wakeText: NonNullable<MatchDriverOptions['wakeText']>
@@ -54,10 +55,21 @@ export class MatchDriver {
     this.log = opts.log ?? (() => {})
   }
 
-  /** 注册对局（接线 MatchEvent → 唤醒）。幂等。 */
+  /** 注册对局（接线 MatchEvent → 唤醒）。幂等；同 matchId 重复 watch 合并 waker 表。 */
   watch(machine: MatchMachine, wakers: Record<string, SeatWaker>): void {
     this.machines.add(machine)
-    for (const [seatId, waker] of Object.entries(wakers)) this.wakers.set(seatId, waker)
+    let table = this.wakers.get(machine.id)
+    if (!table) {
+      table = new Map<string, SeatWaker>()
+      this.wakers.set(machine.id, table)
+    }
+    for (const [seatId, waker] of Object.entries(wakers)) table.set(seatId, waker)
+  }
+
+  /** 解除 watch（settled 时调用）；同时清理该对局的 waker 表。 */
+  unwatch(machine: MatchMachine): void {
+    this.machines.delete(machine)
+    this.wakers.delete(machine.id)
   }
 
   /** 启动常驻循环。幂等。 */
@@ -91,14 +103,15 @@ export class MatchDriver {
   async onEvent(machine: MatchMachine, event: MatchEvent): Promise<void> {
     const round = 'round' in event ? event.round : machine.state.roundIndex
     if (event.type === 'settled') {
-      this.machines.delete(machine)
+      this.unwatch(machine)
       return
     }
+    const table = this.wakers.get(machine.id)
     for (const p of machine.players) {
       const key = `${machine.id}:${p.seatId}:${round}:${event.type}`
       if (this.pendingWake.has(key)) continue
       this.pendingWake.add(key)
-      const waker = this.wakers.get(p.seatId)
+      const waker = table?.get(p.seatId)
       if (!waker) continue
       try {
         await waker.prompt(p.seatId, this.wakeText(event, machine))

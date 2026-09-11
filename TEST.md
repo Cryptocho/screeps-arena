@@ -13,9 +13,11 @@
 **终端 1**（HTTP 桥，端口 8787）：
 ```sh
 fnm exec --using=22 -- npx tsx scripts/dev-server.ts
-# 预期输出：[dev] http://127.0.0.1:8787 (mock world; frontend dev server proxies here)
+# 预期输出：[dev] http://127.0.0.1:8787 (mock world; wake=disabled)
+# 若已 export OPENROUTER_API_KEY，则 wake=real xiaomi/mimo-v2.5（会真实调用 LLM）
 ```
-（已实测：启动正常，`curl http://127.0.0.1:8787/api/matches` 返回 `{"matches":[]}`）
+（已实测 2026-09-11：启动正常；`/api/matches` create→list→get→start(409 拒)→settle→
+terrain→world→console 全部端点返回预期。）
 
 **终端 2**（前端 dev，端口 5173）：
 ```sh
@@ -42,12 +44,20 @@ fnm exec --using=22 -- npm run dev:client
 ## 3. 自动化 lane（已实测，供回归）
 
 ```sh
-fnm exec --using=22 -- npm test           # 70/70 绿（12 文件，离线 mock，零成本）
+fnm exec --using=22 -- npm test           # 72/72 绿（12 文件，离线 mock，零成本，≈1.6s）
 fnm exec --using=22 -- npm run typecheck  # 零错
 fnm exec --using=22 -- npm run build:client  # vite build 零错（227KB）
-fnm exec --using=22 -- npm run test:live  # 真实私服 IT（首次安装 ≈6 分钟，已跑绿）
-OPENROUTER_API_KEY=… fnm exec --using=22 -- npm run test:smoke  # 真实 LLM 冒烟（114s，已跑绿）
+fnm exec --using=22 -- npm run test:live  # 真实私服 IT（首次安装 ≈6 分钟；已实测 375s 绿）
+OPENROUTER_API_KEY=… fnm exec --using=22 -- npm run test:smoke  # 真实 LLM 冒烟（已实测 418s 绿）
 ```
+
+> **lane 隔离说明**：`test:live` / `test:smoke` 各用独立 vitest config
+> （`vitest.live.config.ts` / `vitest.smoke.config.ts`）——主 config 把这两条 lane
+> exclude 掉，所以默认 `npm test` 绝不触网、零成本；vitest CLI 的 `--exclude` 是追加语义
+> 无法撤销主 config 的排除，故走独立 config 文件。
+>
+> **冒烟 lane 的定位**：钉「真实 LLM 的 SSE / 工具调用行为」（按 tool_end 计数断言工具调用
+> 确实发生 + 有界重试）；「代码真落私服」由 `test:live` 承担。
 
 ## 4. 已知遗留
 
@@ -55,3 +65,5 @@ OPENROUTER_API_KEY=… fnm exec --using=22 -- npm run test:smoke  # 真实 LLM �
 - WS console 流 M2（当前轮询）；真实私服 + 前端联调的完整观战（Agent 真跑代码）在
   M1 已打通链路（test:live + test:smoke 分别验证两端），端到端一局真实对局的浏览器
   验收建议 M2 容器化后做。
+- dev-server 默认是 **mock 世界**（无房间/无真实代码执行）；带 `OPENROUTER_API_KEY`
+  时挂真实 AgentRunner 唤醒（`.dev-agents/` 下建席位目录）。真实私服版常驻服务在 M2 CLI。

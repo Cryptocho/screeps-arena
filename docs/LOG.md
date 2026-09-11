@@ -1,5 +1,32 @@
 # 工程日志（倒序）
 
+## 2026-09-11 M1 复审修复（subagent 审查 FAIL → 7 项全修）
+
+**背景**：M1 成果送 subagent 审查（范围 `a55d28b..7679a3d`），结论 **FAIL**，7 项。
+mod 保留项全集 / 公平红线 / 七面齐全 三条硬指标通过；其余逐条修复如下。
+
+| # | 问题 | 修法 | 证据 |
+|---|---|---|---|
+| 1 | `vitest.config.ts` exclude 写 `*.smoke.it` 而文件是 `llm-smoke.it` → 默认 lane 扫到冒烟，真实打 OpenRouter 且红（69/70） | 通配改 `tests/*smoke.it.test.ts`；两条 lane 改**独立 config**（`vitest.live/smoke.config.ts`）——CLI `--exclude` 是追加语义无法撤销主 config 排除 | `npm test` = **72/72 绿（12 文件，1.6s，零成本）** |
+| 2 | 冒烟只查代码落位、未断言工具调用发生 → 一次性偶然绿 | 按 `tool_end` 事件计数断言 `submit_code` 确实发生 + 有界重试（只追问未落位席位）×3 | `test:smoke` 418s 绿，断言确定性通过 |
+| 3 | `dev-server` 从不 `driver.watch()` → tick 恒 no-op、Agent 永不唤醒；`wireMatchEvents` 空壳 | 新增 `dev-services.ts` 工厂（createMatch 内完成 watch + per-match waker 表）；driver waker 改 per-match（防多对局互相覆盖）+ 新增 `unwatch`；删空壳 `wireMatchEvents` | 新增 `tests/wiring.it.test.ts`（2 测试）：经 createMatch 后真实时钟 tick → roundBreak + 唤醒；超时兜底续跑 |
+| 4 | report 未消费事件流，事件 fog 负向测试缺失 | report 接入 `eventLog` 增量（per-user 游标），只保留有视野房间事件 | `real-arena.test.ts` 新负向：`E5N5` 事件出现、`E7N5`（无视野）被剥离 |
+| 5 | report 只扫 owned rooms，`visibleRooms()` 是死代码 | report 扫全部候选房间 → 交给 `visibleRooms()`；对手单位存在性用已采集 objects 判定 | 原弱用例补断言（对手 creep 进我方房 → `units visible`） |
+| 6 | plan §4 要求冒烟「代码真落私服」实际用 MemoryArena | 明确定位：冒烟 = provider 行为探针；「真落私服」由 `test:live` 承担（写入测试头注 + TEST.md） | 文档一致，无双宣称 |
+| 7 | 文档漂移：React 18 vs 19；`ok:false` 抛错纪律 vs ensure 内 setTickDuration best-effort | README/AGENTS 改 React 19；service 头注澄清「唯一例外：ensure 链内 setTickDuration best-effort」 | typecheck 零错 |
+
+**验证证据（全部本机实测）**：
+- 默认 lane：**72/72 绿（12 文件，1.62s）** + `typecheck` 零错。
+- `test:live`：真实私服全链绿 **375s**（启动→setTickDuration→generateRoom→createUser→
+  submitCode→getWorld→terrain→console→事件流；孤儿进程检查干净）。
+- `test:smoke`：OpenRouter `xiaomi/mimo-v2.5` 真链路绿 **418s**（双席位 submit_code 计数断言）。
+- `build:client`：vite build 零错（227KB）。
+- `dev-server`：create→list→get→start(409 拒)→settle→terrain→world→console 全端点实测通过。
+
+**新增踩坑**：① vitest `--exclude` 是**追加**语义，不能撤销主 config 的 exclude → lane 必须
+独立 config 文件；② `MatchDriver` 的 waker 若全局按 seatId 存，多对局并存会互相覆盖 →
+改 per-match 表。
+
 ## 2026-09-11 M1 完成（S1–S7）
 
 **范围**：HTTP/WS 桥 + 观战前端 + 真实私服接线 + 真实 LLM 冒烟（plan-M1 全部里程碑）。

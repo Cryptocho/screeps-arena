@@ -8,7 +8,6 @@ import fastifyStatic from '@fastify/static'
 import type { FastifyInstance } from 'fastify'
 import { handleArenaRequest } from './routes.js'
 import type { ArenaHttpServices, ArenaRequest } from './routes.js'
-import type { MatchMachine, MatchEvent } from '../match/machine.js'
 
 export interface HttpServerOptions {
   services: ArenaHttpServices
@@ -119,15 +118,4 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
       await app.close()
     },
   }
-}
-
-/** 对局事件 → WS 广播 + 驱动器唤醒的统一接线（server.ts 组装时调用）。 */
-export function wireMatchEvents(
-  machine: MatchMachine,
-  hooks: { onEvent: (m: MatchMachine, e: MatchEvent) => Promise<void>; broadcast: (e: Record<string, unknown>) => void },
-): void {
-  // MatchMachine 的 onEvent 是构造期注入——这里用包装：创建时由 services 层接好。
-  // 本函数提供「事件 → 广播 + 唤醒」的组合语义，供 createMatch 时调用。
-  void machine
-  void hooks
 }

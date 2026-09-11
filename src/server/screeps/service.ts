@@ -5,7 +5,9 @@
  * 七面（plan-M1 一审修复项 1）：createUser / submitCode / getWorld / getTerrain /
  * consoleOutput / system / restart。system 含 setTickDuration/pause/resume/resetArena
  * （对局重置必须走 resetArena，勿用 resetAllData——会毁 v5 格式对象，m0-findings §2）；
- * ok:false 一律抛错（m0-flake 熔断纪律）。
+ * 七面公开方法对 arena 返回的 ok:false 一律抛错（m0-flake 熔断纪律）。
+ * 唯一例外：ensure 启动链内的 setTickDuration 是 best-effort——失败只记日志不抛（与
+ * reference/src/host/service.ts 一致：tick 时长不理想不该拖垮整台私服启动）。
  *
  * 生命周期坑平移（全部有 reference 实证）：
  *   - users.code 带 timestamp（VM 冻结坑，m0-flake §一.1——mod 侧已修，本层不重复）
