@@ -181,7 +181,7 @@ export class ScreepsService {
       ...init,
       headers: {
         'content-type': 'application/json',
-        ...(this.secret ? { 'x-screeps-arena-secret': this.secret } : {}),
+        ...(this.secret ? { 'x-arena-secret': this.secret } : {}),
         ...(init?.headers ?? {}),
       },
     })

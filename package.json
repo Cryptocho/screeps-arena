@@ -12,7 +12,8 @@
     "spike:pi": "tsx scripts/spike-pi-sdk.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "build": "tsdown"
+    "build": "tsdown",
+    "test:live": "vitest run tests/screeps-live.it.test.ts"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.85.1",
