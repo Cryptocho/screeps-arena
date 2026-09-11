@@ -32,8 +32,9 @@ fnm exec --using=22 -- npm run spike:pi   # Pi SDK 闭环（离线 mock LLM，�
   RealArena fog 过滤）——bare-metal，`npm run test:live` 验证。
 - **HTTP/WS 桥**：`src/server/http/`（路由纯函数打表 + 对局驱动器 + Fastify 壳 + WS 推送）。
 - **前端 SPA**：`src/client/`（大厅/对局详情/地图 canvas/console 流；React 19 + Vite）。
-  **表现层未做**（当前仅 monospace + 单背景色，无 CSS 体系）——样式设计归 M2，见
-  `docs/plan-M1.md` §6；功能已浏览器逐项实测验收。
+  **表现层未做**（当前仅 monospace + 单背景色）——样式**不并入任何功能里程碑**，
+  留待全部功能完成后单独做统一收尾（用户决策，见 `docs/plan-M1.md` §6）；
+  功能已浏览器逐项实测验收。
 - **真实 LLM**：OpenRouter（默认模型 `xiaomi/mimo-v2.5`），`npm run test:smoke` 冒烟。
 
 ## 本地起服务（观战）

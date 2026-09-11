@@ -10,8 +10,8 @@ Screeps 斗蛐蛐独立程序：**对局参与者只能是 Agent（LLM 会话）
   并走完审查闭环。**
 - **M1 验证基线**：`npm test` 73/73 绿（13 文件，离线零成本）+ typecheck 零错；
   `test:live` 真实私服绿；`test:smoke` OpenRouter `xiaomi/mimo-v2.5` 绿。
-- **M1 已知边界**：前端**表现层未做**（无 CSS 体系，样式归 M2）；settle 恒 draw（真实计分归 M2）；
-  WS console 流未做（当前 2s 轮询）。
+- **M1 已知边界**：前端**表现层未做**（无 CSS 体系；**用户决策：样式不并入任何功能里程碑，
+  留待全部功能完成后单独收尾**）；settle 恒 draw（真实计分归 M2）；WS console 流未做（当前 2s 轮询）。
 - **Pi SDK spike 已通过**：`docs/spikes/pi-sdk.md`（S1–S6 全绿 + 5 条踩坑结论）。
 - 旧项目结论索引：`reference/AGENTS.md`（交接全文）、`reference/docs/LOG.md`（工程日志）、
   `reference/docs/spikes/`（Screeps 集成面/生命周期陷阱/事件流/地图公平性等 6 份）、
