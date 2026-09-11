@@ -15,7 +15,8 @@
     "build": "tsdown",
     "test:live": "vitest run tests/screeps.live.it.test.ts",
     "build:client": "vite build",
-    "test:smoke": "vitest run tests/llm-smoke.it.test.ts"
+    "test:smoke": "vitest run tests/llm-smoke.it.test.ts",
+    "dev:client": "vite"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.85.1",

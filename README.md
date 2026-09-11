@@ -20,11 +20,32 @@ fnm exec --using=22 -- npm run typecheck  # tsc --noEmit
 fnm exec --using=22 -- npm run spike:pi   # Pi SDK 闭环（离线 mock LLM，零成本）
 ```
 
-## M0 现状
+## M1 现状
 
 - **Agent 运行时**：`src/agent/`（Pi SDK 薄封装 + `submit_code`/`report`/`console` 三工具，
   按席位闭包，公平边界见 `AGENTS.md`）。
 - **对局状态机**：`src/server/match/`（creating→running⇄roundBreak→settled，超时兜底，
   M0 记分全 0 → draw）。
-- **端到端 IT**：`tests/match-stub.it.test.ts`——2 mock LLM 席位 1 轮闭环（离线，零成本）。
-- HTTP 桥 / 前端 / 真实 arena 接入：M1（见 `docs/plan-M0.md`）。
+- **真实私服**：`src/server/screeps/`（ScreepsService 七面 + arena-mod 平移裁剪 +
+  RealArena fog 过滤）——bare-metal，`npm run test:live` 验证。
+- **HTTP/WS 桥**：`src/server/http/`（路由纯函数打表 + 对局驱动器 + Fastify 壳 + WS 推送）。
+- **前端 SPA**：`src/client/`（大厅/对局详情/地图 canvas/console 流；React 18 + Vite）。
+- **真实 LLM**：OpenRouter（默认模型 `xiaomi/mimo-v2.5`），`npm run test:smoke` 冒烟。
+
+## 本地起服务（观战）
+
+```sh
+# 终端 1：HTTP 桥（8787）
+fnm exec --using=22 -- npx tsx scripts/dev-server.ts
+# 终端 2：前端 dev（5173，proxy → 8787）
+fnm exec --using=22 -- npm run dev:client
+# 浏览器打开 http://127.0.0.1:5173
+```
+
+## 测试 lane
+
+```sh
+fnm exec --using=22 -- npm test           # 默认 lane（离线 mock，零成本）
+fnm exec --using=22 -- npm run test:live  # 真实私服 IT（首次安装 ≈6 分钟）
+OPENROUTER_API_KEY=… npm run test:smoke   # 真实 LLM 冒烟（1 局成本）
+```

@@ -1,5 +1,55 @@
 # 工程日志（倒序）
 
+## 2026-09-11 M1 完成（S1–S7）
+
+**范围**：HTTP/WS 桥 + 观战前端 + 真实私服接线 + 真实 LLM 冒烟（plan-M1 全部里程碑）。
+
+- **S1**：`src/server/screeps/`——runtime 三件套平移（node-runtime/server-installer/
+  server-launcher，marker 去 DSH 化）+ `service.ts` 七面纯类（createUser/submitCode/
+  getWorld/getTerrain/consoleOutput/system/restart；生命周期坑全平移：ensure 链内直连
+  防自死锁、exit guard、shutdown 先 await 在途 ensure、restart 刷地形缓冲）。
+- **S2**：`arena-mod.cjs` 平移裁剪（1648→1046 行；删 replay bridge/arenaGen/arenaProbe；
+  **保留项全集**：8 邻墙桩/removeWhere 清桩/resume 强刷 world meta/unhandledRejection
+  守卫/addAccessibleRoom/roomStatusData 播种/users.code timestamp）+ 打表 10 测试。
+- **S3**：`arena.ts` RealArena——SeatRegistry/ArenaBackend 真实实现（bindUser 一次完成
+  generateRoom+createUser、submitCode 真传、runConsole 官方通道+ring 游标、report fog
+  过滤：对手只在有视野房间出现）；service 补 runConsoleAs/getRoomObjects。
+- **S4**：`src/server/http/`——routes.ts 路由纯函数打表（公开投影不暴露 code 内容）、
+  **driver.ts 对局驱动器**（advance 真实时钟 + MatchEvent→prompt 唤醒 + 去重 + 失败不中断）、
+  server.ts Fastify 壳（127.0.0.1 + WS `/ws/matches/:id`、`/ws/world` + broadcast）。
+- **S5**：`src/client/` SPA——大厅（创建表单/列表/start/settle）、对局详情（玩家榜/
+  地图 canvas/console 逐用户 tab/errors）、`src/shared/types.ts` 共享 DTO（契约漂移防线）、
+  vite build 227KB 零错。
+- **S6**：真实 LLM 冒烟绿——OpenRouter `xiaomi/mimo-v2.5` 双席位提交闭环（114s）。
+  **mock vs 真实差异**：① mimo 是 reasoning 模型（content=null，思考链在 reasoning 字段，
+  Pi SDK 透明处理）；② 真实 LLM 先 console/report 探测环境再提交（mock 直调）；
+  ③ 首次 submit_code 参数形状错（modules 传字符串）→ schema 拒 → LLM 自修正重提——
+  错误回执→自愈链路真实生效；④ SSE 工具调用分片聚合正常（probe 验证）。
+- **S7**：本条 + README + TEST.md。
+
+**验证证据**：
+- 默认 lane：70/70 测试绿（12 文件）+ typecheck 零错。
+- `test:live`：真实私服全链绿（安装→启动→generateRoom→createUser→submitCode→getWorld→
+  terrain→console→事件流，6 分钟；孤儿进程检查干净）。
+- `test:smoke`：OpenRouter 真链路绿（114s，双席位提交闭环）。
+- `build:client`：vite build 零错。
+
+**踩坑记录**：
+1. secret header 名不一致（service 发 `x-screeps-arena-secret`，mod 校验 `x-arena-secret`）
+   → 403 bad secret。修：统一 `x-arena-secret`。
+2. `npx vitest run` 不带参数会把 live IT 扫进默认 lane（每次全量测试重装 screeps 6 分钟
+   超时）→ vitest exclude `*.live.it.test.ts`/`*.smoke.it.test.ts` + 文件改名匹配。
+3. 冒烟 IT 首败根因：工具面 backend 直连 MemoryArena 没走状态机收口（S4 IT 有
+   machineBackend 包装，冒烟漏了）→ 补 backendFor(seatId) 后绿。
+4. OpenRouter mimo 首次提交参数形状错误是**预期行为**（schema 拒→自修正），不是 bug。
+
+**遗留（M2 起）**：
+- compose 双服务容器化、真实计分（world 快照→胜负判定）、地图公平性距离校验重掷、
+  interrupted 恢复、席位目录名碰撞加固（M0 审查建议 1）。
+- WS console 流（M1 用轮询增量）、models.json apiKey 明文落 tmpdir 的清理（M0 审查建议 2）。
+- report/console 的 IT 只驱动了 submit_code（M0 审查建议 3）——冒烟已见 console/report
+  真实调用，但未断言其落位内容。
+
 ## 2026-09-11 M0 完成（S0–S5）
 
 **范围**：骨架 + Agent 运行时最小落地（plan-M0 §3 全部里程碑）。
