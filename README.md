@@ -15,5 +15,16 @@ Screeps 斗蛐蛐独立程序：Agent 与 Agent 对战，人类只观战。自 D
 ## 快速验证
 
 ```sh
+fnm exec --using=22 -- npm test           # vitest 单测 + 对局 IT（离线 mock LLM，零成本）
+fnm exec --using=22 -- npm run typecheck  # tsc --noEmit
 fnm exec --using=22 -- npm run spike:pi   # Pi SDK 闭环（离线 mock LLM，零成本）
 ```
+
+## M0 现状
+
+- **Agent 运行时**：`src/agent/`（Pi SDK 薄封装 + `submit_code`/`report`/`console` 三工具，
+  按席位闭包，公平边界见 `AGENTS.md`）。
+- **对局状态机**：`src/server/match/`（creating→running⇄roundBreak→settled，超时兜底，
+  M0 记分全 0 → draw）。
+- **端到端 IT**：`tests/match-stub.it.test.ts`——2 mock LLM 席位 1 轮闭环（离线，零成本）。
+- HTTP 桥 / 前端 / 真实 arena 接入：M1（见 `docs/plan-M0.md`）。
