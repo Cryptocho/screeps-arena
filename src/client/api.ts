@@ -60,3 +60,40 @@ export function subscribeMatch(id: string, onMessage: (msg: Record<string, unkno
   }
   return () => ws.close()
 }
+
+/**
+ * WS console 订阅（M2/S2，替换 2s 轮询）。服务端 per-user 单定时器分发（内部游标），
+ * 多订阅者不互吞；HTTP 降级口必须显式传 since，前端不再走 HTTP。
+ */
+export function subscribeConsole(
+  id: string,
+  user: string,
+  onMessage: (msg: { lines: string[]; bound: boolean }) => void,
+): () => void {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+  const ws = new WebSocket(`${proto}://${location.host}/ws/matches/${encodeURIComponent(id)}`)
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type: 'subscribe_console', user }))
+  }
+  ws.onmessage = (ev) => {
+    try {
+      const msg = JSON.parse(String(ev.data)) as { type?: string; user?: string; lines?: unknown[]; bound?: boolean }
+      if (msg.type === 'console_lines' && msg.user === user && Array.isArray(msg.lines)) {
+        onMessage({
+          lines: msg.lines.filter((l): l is string => typeof l === 'string'),
+          bound: msg.bound ?? true,
+        })
+      }
+    } catch {
+      /* 坏帧丢弃 */
+    }
+  }
+  return () => {
+    try {
+      ws.send(JSON.stringify({ type: 'unsubscribe_console' }))
+    } catch {
+      /* 已关 */
+    }
+    ws.close()
+  }
+}

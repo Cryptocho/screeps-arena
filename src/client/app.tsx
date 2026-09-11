@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type React from 'react'
 import type { MatchView, WorldSnapshot } from '../shared/types.js'
-import { createMatch, fetchMatch, fetchMatches, fetchTerrain, fetchWorld, settleMatch, startMatch, subscribeMatch } from './api.js'
+import { createMatch, fetchMatch, fetchMatches, fetchTerrain, fetchWorld, settleMatch, startMatch, subscribeConsole, subscribeMatch } from './api.js'
 import { TerrainCanvas } from './terrain-canvas.js'
 
 type Tab = 'lobby' | 'match'
@@ -154,25 +154,15 @@ function MatchDetail(props: { id: string }): React.ReactElement {
     }
   }, [props.id])
 
-  // console 流：轮询增量（M1 最小实现；WS console 流 M2）
+  // console 流：WS 订阅增量（M2/S2 替换 2s 轮询），累积展示（上限 500 行）
   useEffect(() => {
     if (!consoleTab) return
-    let alive = true
-    const poll = async () => {
-      try {
-        const res = await fetch(`/api/matches/${encodeURIComponent(props.id)}/console?user=${encodeURIComponent(consoleTab)}`)
-        if (!res.ok) return
-        const body = (await res.json()) as { lines: string[] }
-        if (alive) setConsoleLines(body.lines)
-      } catch { /* 忽略瞬时错误 */ }
-    }
-    void poll()
-    const t = setInterval(() => void poll(), 2000)
-    return () => {
-      alive = false
-      clearInterval(t)
-    }
-  }, [consoleTab])
+    setConsoleLines([])
+    const unsub = subscribeConsole(props.id, consoleTab, (msg) => {
+      if (msg.bound) setConsoleLines((prev) => [...prev, ...msg.lines].slice(-500))
+    })
+    return unsub
+  }, [consoleTab, props.id])
 
   if (error) return <p style={{ color: '#e07070' }}>{error}</p>
   if (!match) return <p>loading…</p>
@@ -186,7 +176,7 @@ function MatchDetail(props: { id: string }): React.ReactElement {
       </h2>
       <table cellPadding={4} style={{ marginBottom: 12 }}>
         <thead>
-          <tr><th>seat</th><th>username</th><th>ready</th><th>code</th><th>rooms</th><th>rcl</th><th>spawns</th><th>creeps</th></tr>
+          <tr><th>seat</th><th>username</th><th>ready</th><th>code</th><th>score</th><th>rooms</th><th>rcl</th><th>spawns</th><th>creeps</th></tr>
         </thead>
         <tbody>
           {match.players.map((p) => {
@@ -197,6 +187,7 @@ function MatchDetail(props: { id: string }): React.ReactElement {
                 <td>{p.username}</td>
                 <td>{p.ready ? '✓' : '…'}</td>
                 <td>{p.hasCode ? '✓' : '—'}</td>
+                <td>{match.scores?.[p.seatId] ?? '—'}</td>
                 <td>{u?.ownedRooms ?? 0}</td>
                 <td>{u?.rclTotal ?? 0}</td>
                 <td>{u?.spawns ?? 0}</td>
@@ -211,7 +202,7 @@ function MatchDetail(props: { id: string }): React.ReactElement {
         <h3 style={{ fontSize: 13 }}>console</h3>
         <nav>
           {match.players.map((p) => (
-            <button key={p.seatId} onClick={() => setConsoleTab(p.username)} disabled={consoleTab === p.username}>
+            <button key={p.seatId} onClick={() => setConsoleTab(p.seatId)} disabled={consoleTab === p.seatId}>
               {p.username}
             </button>
           ))}

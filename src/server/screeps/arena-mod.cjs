@@ -756,6 +756,13 @@
           // 邻房已生成时，本房的 ring stub 可能已占位；不先清掉，stock generateRoom
           // 会再插一行真地形 → 同房两行 → findOne 命中全墙桩 → placeSpawn 无格可放
           .then(function () { return db['rooms.terrain'].removeWhere({ room: roomName }) })
+          // [M2 fix] 重掷语义（M2/S6）：房已存在时 stock generateRoom 抛 "This room already
+          // exists"——重掷与首生成必须走同一条路，先清房内对象与房间元数据（db.rooms _id=房名）
+          .then(function () {
+            return db['rooms.objects'].removeWhere({ room: roomName }).then(function () {
+              return db.rooms.removeWhere({ _id: roomName })
+            })
+          })
           .then(function () { return d.cliMap.generateRoom(roomName, genOpts) })
           .then(function (r) { return addWalledNeighbors(roomName).then(function () { return r }) })
           // stub 插入晚于 stock generateRoom 内部的 updateTerrainData，必须重建 blob

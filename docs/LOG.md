@@ -1,5 +1,72 @@
 # 工程日志（倒序）
 
+## 2026-09-11 M2 成果审查一轮：FAIL 3 阻塞 → 修复（待复审）
+
+**一审结论**：FAIL——① main.ts `createMatch` 缺 `driver.watch` + waker（真实新局驱动链断裂，
+M1 复审问题 3 重演：mock 自证、真实路径漏接——wiring IT 只测 dev-services，m2-smoke 恰好
+绕开该路径）；② 观战 console 身份错位（前端订阅用显示名，真实用户名 = agent_<slug>，
+静默 bound:false）；③ plan 判据 3 的 WS console 协议 IT 缺失且缩水未声明。
+非阻塞 5 条：settled 占坑、errors[] 中断标记、S6 重掷粒度注释、live IT 距离断言、TEST.md 过期段。
+
+**修复**：createMatch 补 lazyWaker + driver.watch；console 口统一 seatId 语义
+（前端订阅传 seatId，main.ts 组装层 resolveUser 解析，未映射→bound:false 静默）；
+新增 tests/ws-console.it.test.ts（3 条：订阅→增量→退订停推 / 双客户端单拉取分发 /
+bound:false 推一次即静默 / close 清理）；machines.settled 释放；恢复局 errors[] 中断痕迹；
+S6 整体重掷注释声明；live IT 补距离偏离 ≤10 断言；TEST.md §2/§3/§4 过期段更新。
+
+**验证**：`npm test` **104/104**（19 文件，+WS IT）+ typecheck 零错 + build/build:client 零错；
+`sh scripts/m2-smoke.sh` 重跑 9/9 PASS（修复无回归）。
+
+**复审**（新会话，独立）：**PASS**——3 阻塞逐条确认真修（createMatch watch 不在 restore 分支内、
+console 解析在组装层且未映射透传、WS IT 连真实 match id 非假阳性）；5 非阻塞 4 项落实，
+余 1 项文档计数（101/18→104/19）已随本轮改完。新增非阻塞观察 2 条：settle 后仅同席位可再建局
+（usedSeats/rooms/users/runners 未清，已写入 AGENTS.md M2 边界）；console 口传任意合法 username
+可直读该用户 console（固有旁观权限，127.0.0.1 无鉴权不对外，与修复前语义一致）。
+
+
+
+## 2026-09-11 M2 实施（真实计分 + WS console 流 + 容器化 + 健壮性；待成果审查）
+
+**计划**：`docs/plan-M2.md` v2（审查闭环：一审 FAIL 4 项 → 修订 → 复审仅余 1 项新引入 → 修 1 行 → PASS）。
+范围 7 项：S1 真实计分 / S2 WS console 流 / S0 统一组装入口 / S3+S4 容器化+数据卷 /
+S5 interrupted 恢复 / S6 地图公平性 / S7 席位碰撞加固。
+
+**交付**：
+- **S1**：`score.ts` computeOutcome 纯函数（world 出局 = spawns==0 且 creeps==0；arena = spawns==0；
+  同轮双出局 tiebreak creeps→rooms→rclTotal——**M2 新增设计，用户已确认**）；settle/advance 可选
+  outcome 注入（缺席 = M0 全 0 draw，基线不破）；manual 走 routes 预取快照，roundsExhausted 走
+  driver tick 对 roundBreak 相位机器 advance 前 await 快照（该路径不发 round_resume 事件）。
+- **S2**：WS 升级双向（subscribe_console/unsubscribe_console → console_lines 推送）；per-user
+  单定时器分发（共享内部游标，多订阅者不互吞）；前端删 2s 轮询改累积（≤500 行）；HTTP 端点
+  保留为降级口（必须显式 since，否则互吞）。
+- **S0**：`src/server/main.ts` 统一真实组装（managed 私服 + RealArena + driver + 桥 + 静态托管 +
+  journal），CLI `--port/--host/--data-dir/--static-dir/--agent-dir/--model/--install-only`；
+  启动即拉私服（fail fast）；单世界单活跃对局（M2 约束，房间池 E5N5/E7N5）。
+- **S3+S4**：Dockerfile（node:22-slim + 构建期私服安装，安装产物进镜像）+ docker-compose.yml
+  （**单 app 服务** + screeps-data/arena-data 两卷，卷只挂可变数据）+ `--host` 参数化
+  （默认 127.0.0.1 不变）。
+- **S5**：MatchJournal（相位迁移唯一写点原子落盘；含 seatUsers/rooms 映射——复审 B4）+
+  MatchMachine.restore（roundBreakSince 重置恢复时刻）+ 启动扫描恢复；恢复局房间跳过公平性重掷。
+- **S6**：RealArena.prepareRooms（批量 generateRoom → Σ(source→controller) 距离偏离中位数 >10
+  重掷 ≤3 → 定稿一次 restart；坐标走 roomObjects——mod generateRoom 无坐标返回）；
+  **mod 侧收口重掷语义**：同房重复 generateRoom 抛 "This room already exists"（live 实测），
+  修 arena-mod.cjs（[M2 fix] 先清 rooms.objects/db.rooms 再 stock 生成），打表新增一条单测钉住。
+- **S7**：seatSlug（sanitize ≤16 + sha1 前 8，agent_ 前缀总长 ≤30）替换 runner cwd 与
+  agent username 两处；a:b vs a_b 不再碰撞。
+
+**验证（全部实测）**：
+- `npm test` **101/101 绿**（18 文件，基线 73 + 新增 28）；`npm run typecheck` 零错
+- `npm run build`（tsdown → dist/server/main.mjs 97.89kB）+ `npm run build:client` 零错；
+  bundle 冒烟（ARENA_MOD_PATH 探测错误路径）✓
+- `npm run test:live` **2/2 绿**（增补段实测：同房重掷语义 + bindUser + settle 真实计分 scores 非全 0）
+- `sh scripts/m2-smoke.sh` **9/9 PASS**（真实 main.mjs 全链：起服→world→建局→settle→journal
+  无残留→预置中断局重启→journal-restored=1→相位/roundIndex 还原→HTTP 可见）
+- compose：**本机无 Docker，未实测**（静态核对；TEST.md 手测项待 Docker 环境）——plan-M2 §3.4 降级路径
+
+**遗留**：M3+（锦标赛/回放/arena-blitz/房间可见性/跨容器拆分评估）；表现层收尾（全部功能后
+单独做）；compose up 实测待 Docker 环境；多局世界/房间池扩张。
+
+
 ## 2026-09-11 M1 收尾（里程碑关闭）
 
 **范围声明（避免含混）**：M1 计划判据全部达成；**前端表现层（样式）从未列入 M1 判据**，

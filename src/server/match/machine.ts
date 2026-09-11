@@ -99,8 +99,9 @@ export class MatchMachine {
     this.emit({ type: 'started', round: 0 })
   }
 
-  /** 时钟驱动：running 周期到点 → roundBreak；roundBreak 超时/全员就绪 → resume。幂等。 */
-  advance(now = Date.now()): void {
+  /** 时钟驱动：running 周期到点 → roundBreak；roundBreak 超时/全员就绪 → resume。幂等。
+   *  scores（M2/S1）透传 resume → roundsExhausted settle；缺席维持 M0 全 0 draw。 */
+  advance(now = Date.now(), scores?: { scores: Record<string, number>; winner: WinnerRef }): void {
     if (this.state.phase === 'running' && this.state.roundStartedAt !== undefined) {
       if (now - this.state.roundStartedAt >= this.config.roundMs) {
         this.enterRoundBreak(now)
@@ -108,7 +109,7 @@ export class MatchMachine {
     }
     if (this.state.phase === 'roundBreak' && this.state.roundBreakSince !== undefined) {
       if (this.allReady()) {
-        this.resume(now)
+        this.resume(now, [], scores)
         return
       }
       if (now - this.state.roundBreakSince >= this.config.roundBreakTimeoutMs) {
@@ -122,22 +123,79 @@ export class MatchMachine {
             autoReadySeats.push(p.seatId)
           }
         }
-        this.resume(now, autoReadySeats)
+        this.resume(now, autoReadySeats, scores)
       }
     }
   }
 
-  /** 结算（running / roundBreak / creating 均可；M0 计数器全 0 → draw）。 */
-  settle(reason: SettleReason = 'manual', now = Date.now()): void {
+  /**
+   * 结算（running / roundBreak / creating 均可）。
+   * outcome 缺席 → M0 行为（全 0 → draw，既有测试基线不破）；给入 → 真实计分
+   * （M2/S1：scores 保留真实计数，winner 由 computeOutcome 判定，编排层预取注入）。
+   */
+  settle(
+    reason: SettleReason = 'manual',
+    now = Date.now(),
+    outcome?: { scores: Record<string, number>; winner: WinnerRef },
+  ): void {
     this.assertTransition('settled')
     this.state.phase = 'settled'
     this.state.settledAt = now
     this.state.settleReason = reason
-    const scores: Record<string, number> = {}
-    for (const p of this.players) scores[p.seatId] = 0
-    this.state.scores = scores
-    this.state.winner = { kind: 'draw' }
+    if (outcome) {
+      this.state.scores = { ...outcome.scores }
+      this.state.winner = outcome.winner
+    } else {
+      const scores: Record<string, number> = {}
+      for (const p of this.players) scores[p.seatId] = 0
+      this.state.scores = scores
+      this.state.winner = { kind: 'draw' }
+    }
     this.emit({ type: 'settled', reason, winner: this.state.winner })
+  }
+
+  /**
+   * journal 恢复（M2/S5）：灌回 per-player code/ready 与 state 元数据，不触发事件。
+   * 仅用于未 settled 的对局（journal 扫描方过滤）；roundBreakSinceResetTo 把
+   * roundBreakSince 重置为恢复时刻（否则超时兜底立即触发）。
+   */
+  static restore(opts: {
+    id: string
+    config: MatchConfig
+    players: MatchPlayer[]
+    state: Pick<MatchState, 'createdAt' | 'phase' | 'roundIndex' | 'errors'> &
+      Partial<Pick<MatchState, 'roundBreakSince' | 'roundStartedAt' | 'settledAt' | 'settleReason' | 'winner' | 'scores'>>
+    roundBreakSinceResetTo?: number
+    onEvent?: (event: MatchEvent) => void
+  }): MatchMachine {
+    const m = new MatchMachine({
+      id: opts.id,
+      config: opts.config,
+      players: opts.players.map((p) => ({ seatId: p.seatId, username: p.username })),
+      onEvent: opts.onEvent,
+    })
+    for (const saved of opts.players) {
+      const p = m.players.find((x) => x.seatId === saved.seatId)
+      if (!p) continue
+      if (saved.code) p.code = { ...saved.code }
+      p.ready = saved.ready
+      if (saved.autoReady) p.autoReady = saved.autoReady
+      if (saved.submittedAt !== undefined) p.submittedAt = saved.submittedAt
+    }
+    Object.assign(m.state, {
+      createdAt: opts.state.createdAt,
+      phase: opts.state.phase,
+      roundIndex: opts.state.roundIndex,
+      errors: [...opts.state.errors],
+      ...(opts.state.roundBreakSince !== undefined ? { roundBreakSince: opts.state.roundBreakSince } : {}),
+      ...(opts.state.roundStartedAt !== undefined ? { roundStartedAt: opts.state.roundStartedAt } : {}),
+      ...(opts.state.settledAt !== undefined ? { settledAt: opts.state.settledAt } : {}),
+      ...(opts.state.settleReason !== undefined ? { settleReason: opts.state.settleReason } : {}),
+      ...(opts.state.winner !== undefined ? { winner: opts.state.winner } : {}),
+      ...(opts.state.scores !== undefined ? { scores: opts.state.scores } : {}),
+    })
+    if (opts.roundBreakSinceResetTo !== undefined) m.state.roundBreakSince = opts.roundBreakSinceResetTo
+    return m
   }
 
   private allReady(): boolean {
@@ -152,10 +210,14 @@ export class MatchMachine {
     this.emit({ type: 'round_break', round: this.state.roundIndex })
   }
 
-  private resume(now: number, autoReadySeats: string[] = []): void {
+  private resume(
+    now: number,
+    autoReadySeats: string[] = [],
+    scores?: { scores: Record<string, number>; winner: WinnerRef },
+  ): void {
     const nextRound = this.state.roundIndex + 1
     if (this.config.maxRounds > 0 && nextRound >= this.config.maxRounds) {
-      this.settle('roundsExhausted', now)
+      this.settle('roundsExhausted', now, scores)
       return
     }
     this.assertTransition('running')

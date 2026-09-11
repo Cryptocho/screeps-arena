@@ -9,6 +9,8 @@
 import type { MatchMachine } from '../match/machine.js'
 import type { MatchEvent } from '../match/machine.js'
 import type { MatchConfig } from '../match/model.js'
+import { computeOutcome } from '../match/score.js'
+import type { SeatScoreInput } from '../match/score.js'
 
 /** 桥需要的服务面（结构化最小接口）。 */
 export interface ArenaHttpServices {
@@ -19,6 +21,8 @@ export interface ArenaHttpServices {
   getTerrain(rooms: string[]): Promise<{ terrain: Record<string, string> }>
   /** 逐用户 console 增量（游标由服务层维护）。 */
   consoleSince(username: string, since?: number): Promise<{ lines: unknown[]; cursor: number; bound: boolean }>
+  /** 计分快照（M2/S1；可选——缺席时 settle 维持 M0 全 0 draw）。keys = seatIds。 */
+  getScoreSnapshot?(seatIds: string[]): Promise<Record<string, SeatScoreInput> | undefined>
 }
 
 export interface ArenaRequest {
@@ -126,7 +130,17 @@ export async function handleArenaRequest(services: ArenaHttpServices, req: Arena
         m.start()
         return ok(matchView(m))
       }
-      m.settle('manual')
+      // 真实计分（M2/S1）：先取快照算 outcome；快照缺席/失败 → 降级 M0 全 0 draw（不卡结算）
+      let outcome: Parameters<MatchMachine['settle']>[2] | undefined
+      if (services.getScoreSnapshot) {
+        try {
+          const snap = await services.getScoreSnapshot(m.players.map((p) => p.seatId))
+          if (snap) outcome = computeOutcome(snap)
+        } catch {
+          outcome = undefined
+        }
+      }
+      m.settle('manual', Date.now(), outcome)
       return ok(matchView(m))
     } catch (err) {
       return bad(409, String(err instanceof Error ? err.message : err))

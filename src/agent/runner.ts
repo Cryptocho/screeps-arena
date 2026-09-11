@@ -16,6 +16,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { seatSlug } from '../shared/seat-slug.js'
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -102,7 +103,8 @@ export class AgentRunner {
 
   /** 创建一个席位会话（隔离目录 + models.json + Pi session）。 */
   static async create(opts: AgentRunnerOptions): Promise<AgentRunner> {
-    const seatDirName = opts.seatId.replace(/[^A-Za-z0-9_-]/g, '_')
+    // M2/S7：sanitize + sha1 后缀 —— 仅特殊字符不同的 seatId（如 a:b / a_b）不再共目录碰撞
+    const seatDirName = seatSlug(opts.seatId)
     const baseDir = opts.baseDir ?? path.join(os.tmpdir(), 'screeps-arena-agents')
     const cwd = path.join(baseDir, seatDirName)
     const agentDir = path.join(cwd, 'agent')

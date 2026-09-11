@@ -12,14 +12,18 @@
  */
 import type { ArenaBackend, SeatRegistry } from '../../agent/tools.js'
 import type { ScreepsService } from './service.js'
+import { seatSlug } from '../../shared/seat-slug.js'
+import { FAIRNESS_THRESHOLD, REROLL_BUDGET, fairnessDeviation, roomDistanceScore } from './fairness.js'
 
 export interface RealArenaOptions {
-  /** 每席位初始房间（bindUser 时 generateRoom + createUser 一次完成）。 */
+  /** 每席位初始房间（bindUser 时建号；房间生成在 prepareRooms 批量做）。可由 assignRoom 追加。 */
   rooms: Record<string, string>
   /** 初始代码（createUser 时随建号写入）。 */
   initialCode?: Record<string, string>
   /** CPU 配额（默认 100）。 */
   cpu?: number
+  /** 日志回调（公平性重掷告警等）。 */
+  log?: (msg: string) => void
 }
 
 /** 视野判定（负向测试的断言锚点）：owned rooms ∪ creep/建筑所在房间。 */
@@ -41,6 +45,8 @@ export class RealArena implements SeatRegistry, ArenaBackend {
   /** 事件流增量游标（ring 下标；report 只回增量，对齐 report 工具「deltas only」语义）。 */
   private readonly eventCursors = new Map<string, number>()
   private readonly opts: RealArenaOptions
+  private roomsPrepared = false
+  private preparePromise: Promise<void> | undefined
 
   constructor(
     private readonly svc: ScreepsService,
@@ -49,14 +55,87 @@ export class RealArena implements SeatRegistry, ArenaBackend {
     this.opts = opts
   }
 
-  /** host 侧落映射 + 私服建号（generateRoom → createUser 一次完成）。幂等：重复 bind 拒绝。 */
+  /** host 侧房间分配（对局创建时调用；公平性校验在 prepareRooms）。同席位重复分配拒绝。 */
+  assignRoom(seatId: string, room: string): void {
+    if (seatId in this.opts.rooms) throw new Error(`seat ${seatId}: room already assigned`)
+    this.opts.rooms[seatId] = room
+  }
+
+  /** 房间坐标 → Σ(source→controller) 距离（缺 controller/source 计 0——生成失败的房必然偏大偏离）。 */
+  private async roomDistances(): Promise<number[]> {
+    const distances: number[] = []
+    for (const room of Object.values(this.opts.rooms)) {
+      const objects = await this.svc.getRoomObjects(room)
+      const sources = objects.filter((o) => o.type === 'source').map((o) => ({ x: o.x, y: o.y }))
+      const controller = objects.find((o) => o.type === 'controller')
+      distances.push(
+        !controller || sources.length === 0 ? 0 : roomDistanceScore(sources, { x: controller.x, y: controller.y }),
+      )
+    }
+    return distances
+  }
+
+  private async doPrepareRooms(): Promise<void> {
+    const seatIds = Object.keys(this.opts.rooms)
+    let deviation = 0
+    for (let attempt = 0; ; attempt++) {
+      for (const seatId of seatIds) {
+        await this.svc.system('generateRoom', { room: this.opts.rooms[seatId]!, sources: 2 })
+      }
+      deviation = fairnessDeviation(await this.roomDistances())
+      if (deviation <= FAIRNESS_THRESHOLD) break
+      if (attempt >= REROLL_BUDGET) {
+        this.opts.log?.(
+          `map fairness: deviation ${deviation} > ${FAIRNESS_THRESHOLD} after ${REROLL_BUDGET} rerolls — keeping last roll`,
+        )
+        break
+      }
+      this.opts.log?.(
+        `map fairness: deviation ${deviation} > ${FAIRNESS_THRESHOLD} — rerolling (attempt ${attempt + 1}/${REROLL_BUDGET})`,
+      )
+    }
+    // generateRoom 后 runner 地形缓存不刷新（进程级，S7a spike）——必须重启；建号期无 run，
+    // 集中一次重启代价最小。同房名重复 generateRoom 的覆盖行为由 live IT 钉住（plan-M2 S6）。
+    if (seatIds.length > 0) await this.svc.restart({ resume: true })
+    this.roomsPrepared = true
+  }
+
+  /**
+   * 批量房间生成 + 公平性校验重掷（M2/S6，map-fairness.md §决策）：
+   * 全部席位房间 generateRoom → 距离偏离中位数超阈值 → 整体重掷（spike 原文为「重掷该房」，
+   * 实现取整体重掷——2 房 1v1 场景等价且实现更简；预算 ≤3，用尽取最后一次 + 告警）→
+   * 一次 restart。幂等 + 并发安全（同一次 ensure 共享）。
+   * 坐标来自 roomObjects 的 source/controller（mod generateRoom 返回无坐标，plan-M2 复审订正）。
+   */
+  async prepareRooms(): Promise<void> {
+    if (this.roomsPrepared) return
+    if (!this.preparePromise) {
+      this.preparePromise = this.doPrepareRooms().finally(() => {
+        this.preparePromise = undefined
+      })
+    }
+    await this.preparePromise
+  }
+
+  /** journal 落盘用：席位 → 房间分配快照。 */
+  roomsSnapshot(): Record<string, string> {
+    return { ...this.opts.rooms }
+  }
+
+  /** journal 恢复路径（M2/S5）：跳过公平性重掷——恢复对局的房间已存在且内容已发展，重掷即破坏。 */
+  markRoomsPrepared(): void {
+    this.roomsPrepared = true
+  }
+
+  /** host 侧落映射 + 私服建号（房间生成在 prepareRooms；此处 createUser + 映射落地）。
+   *  幂等：重复 bind 拒绝。username = agent_ + seatSlug（M2/S7 碰撞加固）。 */
   async bindUser(seatId: string): Promise<{ id: string; username: string }> {
     const existing = this.users.get(seatId)
     if (existing) throw new Error(`seat ${seatId}: already bound to ${existing}`)
     const room = this.opts.rooms[seatId]
     if (!room) throw new Error(`seat ${seatId}: no room assigned (host-side mapping only)`)
-    const username = `agent_${seatId.replace(/[^A-Za-z0-9_-]/g, '_')}`
-    await this.svc.system('generateRoom', { room, sources: 2 })
+    if (!this.roomsPrepared) await this.prepareRooms() // 惰性兑底：未显式 prepare 时建号前补齐
+    const username = `agent_${seatSlug(seatId)}`
     const user = await this.svc.createUser({
       username,
       room,
@@ -65,6 +144,12 @@ export class RealArena implements SeatRegistry, ArenaBackend {
     })
     this.users.set(seatId, username)
     return user
+  }
+
+  /** journal 恢复路径（M2/S5）：灌回 seatId→username 映射（用户已存在于私服，不建号）。
+   *  游标保持 0（新实例默认）——重启后 console 可能重放，plan-M2 S5 已注明。 */
+  restoreUser(seatId: string, username: string): void {
+    this.users.set(seatId, username)
   }
 
   unbindUser(seatId: string): void {

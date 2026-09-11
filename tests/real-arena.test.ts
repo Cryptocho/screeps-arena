@@ -5,6 +5,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { RealArena, visibleRooms } from '../src/server/screeps/arena.js'
 import type { ScreepsService } from '../src/server/screeps/service.js'
+import { seatSlug } from '../src/shared/seat-slug.js'
 
 function fakeSvc(overrides: Partial<Record<string, any>> = {}): ScreepsService {
   return {
@@ -31,21 +32,29 @@ function fakeSvc(overrides: Partial<Record<string, any>> = {}): ScreepsService {
     ),
     consoleOutput: vi.fn(async (_u: string, since?: number) => ({ lines: since ? ['hello'] : [], cursor: 5, bound: true })),
     runConsoleAs: vi.fn(async () => 'ok'),
+    restart: vi.fn(async (_o?: { resume?: boolean }) => {}),
     ...overrides,
   } as unknown as ScreepsService
 }
 
 describe('RealArena（S3）', () => {
-  it('bindUser：generateRoom + createUser + 映射落地；重复 bind 拒绝；无房间席位拒绝', async () => {
+  it('bindUser：惰性 prepareRooms（generateRoom+restart 一次）+ createUser + 映射落地；重复 bind 拒；无房拒', async () => {
     const svc = fakeSvc()
     const arena = new RealArena(svc, { rooms: { 'seat-a': 'E5N5' } })
     const user = await arena.bindUser('seat-a')
-    expect(user.username).toBe('agent_seat-a')
-    expect(arena.resolveUser('seat-a')).toBe('agent_seat-a')
+    expect(user.username).toBe(`agent_${seatSlug('seat-a')}`)
+    expect(arena.resolveUser('seat-a')).toBe(user.username)
     expect(svc.system).toHaveBeenCalledWith('generateRoom', { room: 'E5N5', sources: 2 })
+    expect(svc.restart).toHaveBeenCalledTimes(1)
+    await arena.prepareRooms() // 幂等：已 prepare 早退，不再重启
+    expect(svc.restart).toHaveBeenCalledTimes(1)
     await expect(arena.bindUser('seat-a')).rejects.toThrow('already bound')
     const arenaNoRoom = new RealArena(fakeSvc(), { rooms: {} })
     await expect(arenaNoRoom.bindUser('seat-x')).rejects.toThrow('no room assigned')
+    // M2/S7：仅特殊字符不同的 seatId 不再同 username 碰撞
+    const arena2 = new RealArena(fakeSvc(), { rooms: { 'a:b': 'E5N5', a_b: 'E7N5' } })
+    const [u1, u2] = [await arena2.bindUser('a:b'), await arena2.bindUser('a_b')]
+    expect(u1.username).not.toBe(u2.username)
   })
 
   it('submitCode：成功回 seq=timestamp；失败回 ok:false+reason（不抛）', async () => {

@@ -88,6 +88,12 @@ function makeDb() {
       for (const r of roomsColl) if (r._id === q._id) Object.assign(r, $set)
       return nowPromise(1)
     },
+    removeWhere: (q: any) => {
+      const kept = roomsColl.filter((r) => !matchDoc(r, q))
+      roomsColl.length = 0
+      roomsColl.push(...kept)
+      return nowPromise(roomsColl.length)
+    },
   }
   const collectionsAny = collections as Record<string, any[]>
   for (const key of Object.keys(collectionsAny)) {
@@ -230,6 +236,17 @@ describe('arena mod（S2 打表）', () => {
     }
     // accessibleRooms JSON 列表落地（规范形态：JSON 字符串，非 sadd）
     expect(JSON.parse(bundle.envStore.get('accessibleRooms')!)).toEqual(['E5N5'])
+  })
+
+  it('[M2/S6] 重掷语义：房已存在（rooms/objects 有记录）时先清后生成，不抛 already exists', async () => {
+    ;(bundle.db._collections.rooms as any[]).push({ _id: 'E5N5', invaderGoal: 1 })
+    ;(bundle.db._collections['rooms.objects'] as any[]).push({ _id: 'o1', room: 'E5N5', type: 'spawn' })
+    const res = await systemCmd(bundle, 'generateRoom', 'E5N5')
+    expect(res.body?.ok).toBe(true)
+    expect((bundle.db._collections.rooms as any[]).some((r) => r._id === 'E5N5')).toBe(false)
+    expect((bundle.db._collections['rooms.objects'] as any[]).some((o) => o.room === 'E5N5')).toBe(false)
+    // 链尾照常：accessibleRooms 落地（重掷与首生成同一条路）
+    expect(JSON.parse(bundle.envStore.get('accessibleRooms')!)).toContain('E5N5')
   })
 
   it('保留项②：generateRoom 链顺序——addWalledNeighbors 早于 updateTerrainData（B4）', async () => {

@@ -10,6 +10,11 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ScreepsService, modFileFromContent } from '../src/server/screeps/service.js'
+import { RealArena } from '../src/server/screeps/arena.js'
+import { fairnessDeviation, roomDistanceScore } from '../src/server/screeps/fairness.js'
+import { MatchMachine } from '../src/server/match/machine.js'
+import { computeOutcome } from '../src/server/match/score.js'
+import type { SeatScoreInput } from '../src/server/match/score.js'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
@@ -82,5 +87,53 @@ describe('ScreepsService 真实私服（live）', () => {
     // 事件流（roomsDone 采集）
     const events = await svc.system('eventLog', 0)
     expect(events.ok).toBe(true)
+  }, 600_000)
+
+  it('M2：prepareRooms（同房重复 generateRoom 重掷语义）+ bindUser + settle 真实计分', async () => {
+    const arena = new RealArena(svc, { rooms: { ma: 'E5N5', mb: 'E7N5' }, log: (m) => console.log('[arena]', m) })
+    // E5N5 已由上一用例生成——同房名重复 generateRoom 的覆盖行为在此实测（plan-M2 S6：先 IT 钉住）
+    await arena.prepareRooms()
+    // 公平性断言（plan-M2 §3/S6）：两房 Σ(source→controller) 距离偏离中位数 ≤ 阈值 10
+    const distances: number[] = []
+    for (const room of ['E5N5', 'E7N5']) {
+      const objects = await svc.getRoomObjects(room)
+      const sources = objects.filter((o) => o.type === 'source').map((o) => ({ x: o.x, y: o.y }))
+      const controller = objects.find((o) => o.type === 'controller')
+      expect(controller, `controller in ${room}`).toBeDefined()
+      expect(sources.length, `sources in ${room}`).toBeGreaterThan(0)
+      distances.push(roomDistanceScore(sources, { x: controller!.x, y: controller!.y }))
+    }
+    expect(fairnessDeviation(distances)).toBeLessThanOrEqual(10)
+    const ua = await arena.bindUser('ma')
+    const ub = await arena.bindUser('mb')
+    expect(arena.resolveUser('ma')).toBe(ua.username)
+    expect(ub.username).not.toBe(ua.username)
+
+    // restart 后快照可用 + 建号用户已入世界
+    const world = await svc.getWorld()
+    expect(world.ok).toBe(true)
+    expect(world.users.some((u) => u.username === ua.username)).toBe(true)
+
+    // seatId → username 映射快照（scoreSnapshotFor 同款语义）→ computeOutcome → settle
+    const snap: Record<string, SeatScoreInput> = {}
+    for (const seat of ['ma', 'mb'] as const) {
+      const u = world.users.find((x) => x.username === arena.resolveUser(seat))
+      snap[seat] = { spawns: u?.spawns ?? 0, creeps: u?.creeps ?? 0, rooms: u?.ownedRooms ?? 0, rclTotal: u?.rclTotal ?? 0 }
+    }
+    const m = new MatchMachine({
+      players: [
+        { seatId: 'ma', username: ua.username },
+        { seatId: 'mb', username: ub.username },
+      ],
+      config: { maxRounds: 2 },
+    })
+    m.submitCode('ma', { main: 'module.exports.loop = function () {}' })
+    m.submitCode('mb', { main: 'module.exports.loop = function () {}' })
+    m.start()
+    m.settle('manual', Date.now(), computeOutcome(snap))
+    expect(m.state.settleReason).toBe('manual')
+    // spawn 刚部署（双活）→ draw，但 scores 非全 0（真实计数接通，M0 全 0 语义退役）
+    expect(m.state.winner).toEqual({ kind: 'draw' })
+    expect(Object.values(m.state.scores!).some((v) => v > 0)).toBe(true)
   }, 600_000)
 })

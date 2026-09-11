@@ -1,0 +1,9 @@
+node_modules
+dist
+.arena-data
+.dev-agents
+.git
+reference
+tests
+docs
+*.md

@@ -4,14 +4,19 @@ Screeps 斗蛐蛐独立程序：**对局参与者只能是 Agent（LLM 会话）
 
 ## 当前状态（2026-09-11）
 
-- **M0 完成、M1 完成**：M1（HTTP/WS 桥 + 观战前端 + 真实私服接线 + 真实 LLM 冒烟）已
-  三轮 subagent 审核闭环 PASS（含浏览器实测修复 2 个 dev 运行时 bug），计划书
-  `docs/plan-M1.md`（状态：已完成）。**下一步 M2 计划尚未起草——开工前必须先写计划书
-  并走完审查闭环。**
-- **M1 验证基线**：`npm test` 73/73 绿（13 文件，离线零成本）+ typecheck 零错；
-  `test:live` 真实私服绿；`test:smoke` OpenRouter `xiaomi/mimo-v2.5` 绿。
-- **M1 已知边界**：前端**表现层未做**（无 CSS 体系；**用户决策：样式不并入任何功能里程碑，
-  留待全部功能完成后单独收尾**）；settle 恒 draw（真实计分归 M2）；WS console 流未做（当前 2s 轮询）。
+- **M0 完成、M1 完成、M2 实施完成（成果审查环节进行中）**：M2（真实计分 + WS console 流 +
+  统一组装入口 main.ts + compose 容器化/数据卷 + interrupted 恢复 + 地图公平性重掷 + 席位碰撞
+  加固）已按 `docs/plan-M2.md`（计划书 subagent 审查闭环 PASS）实施完毕，验证证据见
+  `docs/LOG.md` M2 条目。
+- **M2 验证基线（全部实测）**：`npm test` 104/104 绿（19 文件）+ typecheck 零错 +
+  `build`（dist/server/main.mjs）/`build:client` 零错；`test:live` 2/2 绿（含同房重掷实测 +
+  真实计分 + 距离偏离断言）；`scripts/m2-smoke.sh` 9/9（真实 main 全链含中断恢复）。**compose 未实测**
+  （本机无 Docker，TEST.md 如实标注）。
+- **M2 边界**：单世界单活跃对局（房间池 E5N5/E7N5 固定）；tiebreak（creeps→rooms→rclTotal）
+  为 M2 新增设计（用户确认）；**settle 后再建局仅同席位可行**——`machines` 已释放，但
+  `usedSeats`/`arena.rooms`/`users`/`runners` 保留（换新席位会命中房间池耗尽）；房间池扩张/
+  会话清理归 M3+。前端**表现层未做**（**用户决策：样式不并入任何功能里程碑，
+  等全部功能完成后单独统一收尾**）。
 - **Pi SDK spike 已通过**：`docs/spikes/pi-sdk.md`（S1–S6 全绿 + 5 条踩坑结论）。
 - 旧项目结论索引：`reference/AGENTS.md`（交接全文）、`reference/docs/LOG.md`（工程日志）、
   `reference/docs/spikes/`（Screeps 集成面/生命周期陷阱/事件流/地图公平性等 6 份）、

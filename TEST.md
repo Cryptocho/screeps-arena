@@ -1,12 +1,36 @@
-# TEST.md — 用户手测指导（M1）
+# TEST.md — 用户手测指导（M1 + M2）
 
 > 纪律：本文件每条命令均已由 Agent 在本环境真实执行并验证通过（2026-09-11）。
-> 需要您手测的仅限浏览器交互观感（MCP 无法替代主观验收）。
+> 需要您手测的仅限浏览器交互观感与无 Docker 环境无法自动化的容器项；
+> 未实测项均如实标注。
 
 ## 0. 前置
 
 - Node 22（fnm）：`fnm exec --using=22 -- node -v` → v22.x
 - 依赖已装：`fnm exec --using=22 -- npm install --legacy-peer-deps`
+
+## 0.5 M2 真实组装（单进程全链，已实测 2026-09-11）
+
+M2 起真实私服 + HTTP/WS 桥 + 静态前端由统一入口提供（不再散在 IT 里）：
+
+```sh
+fnm exec --using=22 -- npm run build && fnm exec --using=22 -- npm run build:client
+fnm exec --using=22 -- node dist/server/main.mjs --port 8787 --host 127.0.0.1
+# 预期：[main] http://127.0.0.1:8787 data=<cwd>/.arena-data (real world; wake=…; journal-restored=0)
+# 首次启动含私服安装（≈6 分钟）；浏览器打开 http://127.0.0.1:8787 即观战前端
+```
+（已实测：等价冒烟 `sh scripts/m2-smoke.sh` 9/9 PASS——起服/world/建局/settle/
+journal 无残留/中断局重启恢复 journal-restored=1/相位还原。中断恢复复现法：
+对局进行中 kill 进程 → 重启 → 日志 journal-restored=1。）
+
+## 0.6 M2 compose 容器化（**未实测：本机无 Docker**）
+
+```sh
+docker compose up --build   # 构建含私服安装，首次 ≈10 分钟
+# 预期：http://localhost:8787 可用；docker compose restart 后世界库仍在（screeps-data 卷）
+```
+（未实测——本环境无 docker。Dockerfile/compose.yml 已静态核对；app 容器内链路与
+main.mjs 冒烟同构，风险主要在 native 编译与端口映射。）
 
 ## 1. 启动（两个终端）
 
@@ -44,17 +68,20 @@ fnm exec --using=22 -- npm run dev:client
 2. **静默失败**：大厅 start/settle 的 `await` 无 catch，失败时无任何提示（unhandled rejection）。
    已加错误显示（实测点 start 显示 `start failed: HTTP 409`）。
 
-**已知边界（M1 范围内）**：地图 canvas 在 mock 世界无房间数据时不显示（真实私服接线后
-`/api/world` 返回 rooms 才渲染）；console 流是 2s 轮询增量（WS console 流 M2）。
+**已知边界（M2 更新）**：地图 canvas 在 mock 世界无房间数据时不显示；console 流已改
+WS 订阅增量（M2，2s 轮询已删）；**样式仍未做**（全部功能完成后单独统一收尾）。
+另外：真实私服组装下，观战 console 订阅按席位（seatId）解析真实用户名（agent_<slug>），
+若席位尚未建号则显示 (no output)（bound:false 静默）。
 
 ## 3. 自动化 lane（已实测，供回归）
 
 ```sh
-fnm exec --using=22 -- npm test           # 72/72 绿（12 文件，离线 mock，零成本，≈1.6s）
+fnm exec --using=22 -- npm test           # 104/104 绿（19 文件，离线 mock，零成本，≈1.7s）
 fnm exec --using=22 -- npm run typecheck  # 零错
-fnm exec --using=22 -- npm run build:client  # vite build 零错（227KB）
-fnm exec --using=22 -- npm run test:live  # 真实私服 IT（首次安装 ≈6 分钟；已实测 375s 绿）
+fnm exec --using=22 -- npm run build && fnm exec --using=22 -- npm run build:client  # 服务端 main.mjs + vite 前端零错
+fnm exec --using=22 -- npm run test:live  # 真实私服 IT（首次安装 ≈6 分钟；M2 增补后 2/2 绿）
 OPENROUTER_API_KEY=… fnm exec --using=22 -- npm run test:smoke  # 真实 LLM 冒烟（已实测 418s 绿）
+sh scripts/m2-smoke.sh                     # M2 main.mjs 全链冒烟（9/9，含起私服 ≈6 分钟）
 ```
 
 > **lane 隔离说明**：`test:live` / `test:smoke` 各用独立 vitest config
@@ -67,9 +94,9 @@ OPENROUTER_API_KEY=… fnm exec --using=22 -- npm run test:smoke  # 真实 LLM �
 
 ## 4. 已知遗留
 
-- 真实计分（world 快照→胜负）M2；当前 settle 恒 draw（M0 语义）。
-- WS console 流 M2（当前轮询）；真实私服 + 前端联调的完整观战（Agent 真跑代码）在
-  M1 已打通链路（test:live + test:smoke 分别验证两端），端到端一局真实对局的浏览器
-  验收建议 M2 容器化后做。
+- **compose 容器化未实测**（本机无 Docker；TEST.md §0.6 手测项待 Docker 环境）。
+- 真实计分 / WS console 流 / interrupted 恢复 / 地图公平性重掷已在 M2 落地（test:live +
+  m2-smoke 实测）；端到端一局真实对局（双 Agent 真跑代码分出胜负）的浏览器完整验收，
+  建议 M3 首个周期做一次实拍。
 - dev-server 默认是 **mock 世界**（无房间/无真实代码执行）；带 `OPENROUTER_API_KEY`
   时挂真实 AgentRunner 唤醒（`.dev-agents/` 下建席位目录）。真实私服版常驻服务在 M2 CLI。

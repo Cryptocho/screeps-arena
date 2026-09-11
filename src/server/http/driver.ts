@@ -11,6 +11,9 @@
  *     （roundBreak 期未 ready 的席位在超时兜底前仍会被再次唤醒——由本类 pending 去重）。
  */
 import type { MatchMachine, MatchEvent } from '../match/machine.js'
+import { computeOutcome } from '../match/score.js'
+import type { SeatScoreInput } from '../match/score.js'
+import type { WinnerRef } from '../match/model.js'
 
 /** 唤醒通道（AgentRunner.prompt 的结构化最小面）。 */
 export interface SeatWaker {
@@ -22,6 +25,12 @@ export interface MatchDriverOptions {
   intervalMs?: number
   /** 唤醒文本构造（可注入定制；默认 world-rounds 语义）。 */
   wakeText?: (event: MatchEvent, machine: MatchMachine) => string
+  /**
+   * 计分快照（M2/S1）：roundBreak 相位机器在 advance 前 await 取分（roundsExhausted
+   * 真实结算）。roundsExhausted 路径不发 round_resume 事件，此刻是唯一新鲜取分点；
+   * 缺席/抛错 → advance 不带分（M0 全 0 draw），驱动循环不中断。
+   */
+  scoreSnapshot?: (m: MatchMachine) => Promise<Record<string, SeatScoreInput> | undefined>
   log?: (msg: string) => void
 }
 
@@ -33,6 +42,7 @@ export class MatchDriver {
   private timer: ReturnType<typeof setInterval> | undefined
   private readonly intervalMs: number
   private readonly wakeText: NonNullable<MatchDriverOptions['wakeText']>
+  private readonly scoreSnapshot: MatchDriverOptions['scoreSnapshot']
   private readonly log: (msg: string) => void
 
   constructor(opts: MatchDriverOptions = {}) {
@@ -50,6 +60,7 @@ export class MatchDriver {
         }
         return `Match ${m.id}: round ${round} is starting. Your code is live — play the round.`
       })
+    this.scoreSnapshot = opts.scoreSnapshot
     this.log = opts.log ?? (() => {})
   }
 
@@ -86,11 +97,20 @@ export class MatchDriver {
     }
   }
 
-  /** 单拍（测试口）：advance 全部对局 + 消费事件唤醒。 */
+  /** 单拍（测试口）：advance 全部对局（roundBreak 相位先取计分快照）+ 消费事件唤醒。 */
   async tick(): Promise<void> {
     for (const m of this.machines) {
       try {
-        m.advance()
+        let outcome: { scores: Record<string, number>; winner: WinnerRef } | undefined
+        if (m.phase === 'roundBreak' && this.scoreSnapshot) {
+          try {
+            const snap = await this.scoreSnapshot(m)
+            if (snap) outcome = computeOutcome(snap)
+          } catch (err) {
+            this.log(`score snapshot ${m.id} failed: ${String(err)}`)
+          }
+        }
+        m.advance(undefined, outcome)
       } catch (err) {
         this.log(`advance ${m.id} failed: ${String(err)}`)
       }
