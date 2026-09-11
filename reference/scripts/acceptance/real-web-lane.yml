@@ -1,0 +1,24 @@
+# 真实 LLM 全链验收 lane（web GUI @3200，真实 provider 零 stub）—— s12web profile 专用。
+# 用法：dsh --profile s12web --patch scripts/acceptance/real-web-lane.yml --no-open
+# - webserver 3200（避开 3080 用户 GUI）
+# - dsh-screeps 完整 config（dataDir 指向 smoke、tickDuration、agentRecruitTimeoutMs）
+# - 不 insert 任何 stub 插件：spawn 的子会话走 profile 全局 agent-default-model
+#   （openrouter + deepseek/deepseek-v4-flash-0731，key 由 ~/.dsh/.credentials.yaml 解析）
+# - HTTP spawn-agents 请求体不带 provider/model → AgentRegistry.create 用全局默认 = 真实 LLM
+- id: webserver
+  config:
+    host: 127.0.0.1
+    port: 3200
+- id: dsh-screeps
+  config:
+    serverMode: managed
+    dataDir: /tmp/dsh-screeps-server-smoke
+    externalUrl: http://127.0.0.1:21025
+    port: 0
+    nodeVersion: '22'
+    nodeDistMirror: https://nodejs.org/dist
+    tickDuration: 100
+    readyTimeoutMs: 180000
+    agentModel: deepseek/deepseek-v4-flash-0731
+    agentRecruitTimeoutMs: 300000
+    driveIntervalMs: 1000

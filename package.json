@@ -1,0 +1,32 @@
+{
+  "name": "screeps-arena",
+  "version": "0.1.0",
+  "description": "Standalone Screeps 斗蛐蛐 arena — Agent 对战、人类观战（自 DSH 插件切割独立）",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19 <23"
+  },
+  "scripts": {
+    "spike:pi": "tsx scripts/spike-pi-sdk.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "build": "tsdown"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@fastify/static": "^8.0.0",
+    "@fastify/websocket": "^11.0.0",
+    "fastify": "^5.0.0",
+    "typebox": "1.3.27",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsdown": "^0.22.2",
+    "tsx": "^4.19.0",
+    "typescript": "~5.9.2",
+    "vitest": "^4.1.8"
+  }
+}

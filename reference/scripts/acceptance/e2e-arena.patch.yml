@@ -1,0 +1,13 @@
+- insert:
+    - id: dsh-screeps-stub-e2e
+      name: ./scripts/e2e-stub-plugin.mjs
+      config: {}
+- override:
+    - id: dsh-screeps
+      config:
+        serverMode: managed
+        dataDir: /tmp/dsh-screeps-e2e-data
+        port: 0
+        tickDuration: 100
+        readyTimeoutMs: 180000
+        agentRecruitTimeoutMs: 120000

@@ -1,0 +1,14 @@
+- id: webserver
+  config:
+    host: 127.0.0.1
+    port: 3200
+- id: dsh-screeps
+  config:
+    serverMode: managed
+    dataDir: /tmp/dsh-screeps-server-smoke
+    externalUrl: http://127.0.0.1:21025
+    port: 0
+    nodeVersion: '22'
+    nodeDistMirror: https://nodejs.org/dist
+    tickDuration: 100
+    readyTimeoutMs: 180000

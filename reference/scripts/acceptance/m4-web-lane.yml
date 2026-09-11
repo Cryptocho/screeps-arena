@@ -1,0 +1,27 @@
+# M4-F.2 集成验收 lane（web GUI @3200，stub provider 零额度）—— s12web profile 专用。
+# 用法：dsh --profile s12web --patch scripts/acceptance/m4-web-lane.yml --no-open
+# - webserver 3200（避开 3080 用户 GUI）
+# - dsh-screeps 完整 config（dataDir 指向 smoke、tickDuration、agentRecruitTimeoutMs）
+# - insert stub e2e 插件：注册 provider 'stub' 的 LlmAdapter（tournament round prompt 确定性
+#   提交）+ screeps_tournament_demo 触发工具
+- id: webserver
+  config:
+    host: 127.0.0.1
+    port: 3200
+- id: dsh-screeps
+  config:
+    serverMode: managed
+    dataDir: /tmp/dsh-screeps-server-smoke
+    externalUrl: http://127.0.0.1:21025
+    port: 0
+    nodeVersion: '22'
+    nodeDistMirror: https://nodejs.org/dist
+    tickDuration: 100
+    readyTimeoutMs: 180000
+    agentModel: stub-model
+    agentRecruitTimeoutMs: 120000
+    driveIntervalMs: 1000
+- insert:
+    - id: dsh-screeps-m4-stub
+      name: /home/cryptocho/workspace/dsh-screeps/scripts/m4-tournament-stub-plugin.mjs
+      config: {}
