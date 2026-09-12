@@ -45,7 +45,9 @@ export class RealArena implements SeatRegistry, ArenaBackend {
   /** 事件流增量游标（ring 下标；report 只回增量，对齐 report 工具「deltas only」语义）。 */
   private readonly eventCursors = new Map<string, number>()
   private readonly opts: RealArenaOptions
-  private roomsPrepared = false
+  /** 已生成房间全集（M3/S2，plan-M3 D5）：防误重掷的唯一防线——mod generateRoom 是
+   *  覆盖语义（先清库再生成，无 already-exists 拒绝），重掷只允许碰 ∉ 此集合的房间。 */
+  private readonly generatedRooms = new Set<string>()
   private preparePromise: Promise<void> | undefined
 
   constructor(
@@ -62,9 +64,9 @@ export class RealArena implements SeatRegistry, ArenaBackend {
   }
 
   /** 房间坐标 → Σ(source→controller) 距离（缺 controller/source 计 0——生成失败的房必然偏大偏离）。 */
-  private async roomDistances(): Promise<number[]> {
+  private async roomDistances(rooms: string[]): Promise<number[]> {
     const distances: number[] = []
-    for (const room of Object.values(this.opts.rooms)) {
+    for (const room of rooms) {
       const objects = await this.svc.getRoomObjects(room)
       const sources = objects.filter((o) => o.type === 'source').map((o) => ({ x: o.x, y: o.y }))
       const controller = objects.find((o) => o.type === 'controller')
@@ -75,14 +77,18 @@ export class RealArena implements SeatRegistry, ArenaBackend {
     return distances
   }
 
-  private async doPrepareRooms(): Promise<void> {
-    const seatIds = Object.keys(this.opts.rooms)
+  /** 待生成房间：已分配 ∉ generatedRooms。多局并存下各局只生成自己的新房间。 */
+  private pendingRooms(): string[] {
+    return Object.values(this.opts.rooms).filter((room) => !this.generatedRooms.has(room))
+  }
+
+  private async doPrepareRooms(pending: string[]): Promise<void> {
     let deviation = 0
     for (let attempt = 0; ; attempt++) {
-      for (const seatId of seatIds) {
-        await this.svc.system('generateRoom', { room: this.opts.rooms[seatId]!, sources: 2 })
+      for (const room of pending) {
+        await this.svc.system('generateRoom', { room, sources: 2 })
       }
-      deviation = fairnessDeviation(await this.roomDistances())
+      deviation = fairnessDeviation(await this.roomDistances(pending))
       if (deviation <= FAIRNESS_THRESHOLD) break
       if (attempt >= REROLL_BUDGET) {
         this.opts.log?.(
@@ -95,26 +101,30 @@ export class RealArena implements SeatRegistry, ArenaBackend {
       )
     }
     // generateRoom 后 runner 地形缓存不刷新（进程级，S7a spike）——必须重启；建号期无 run，
-    // 集中一次重启代价最小。同房名重复 generateRoom 的覆盖行为由 live IT 钉住（plan-M2 S6）。
-    if (seatIds.length > 0) await this.svc.restart({ resume: true })
-    this.roomsPrepared = true
+    // 集中一次重启代价最小。多局并存下此重启会短暂中断他局 run/console（plan-M3 D5：
+    // prepare 互斥 + 中断窗口显式接受，观战/runner 由现有游标与重试吸收）。
+    // 注意：公平性偏离按「本局待生成房间集合」计算（M2 全局语义随 roomsPrepared 一并退役）。
+    await this.svc.restart({ resume: true })
+    for (const room of pending) this.generatedRooms.add(room)
   }
 
   /**
-   * 批量房间生成 + 公平性校验重掷（M2/S6，map-fairness.md §决策）：
-   * 全部席位房间 generateRoom → 距离偏离中位数超阈值 → 整体重掷（spike 原文为「重掷该房」，
-   * 实现取整体重掷——2 房 1v1 场景等价且实现更简；预算 ≤3，用尽取最后一次 + 告警）→
-   * 一次 restart。幂等 + 并发安全（同一次 ensure 共享）。
-   * 坐标来自 roomObjects 的 source/controller（mod generateRoom 返回无坐标，plan-M2 复审订正）。
+   * 批量房间生成 + 公平性校验重掷（M2/S6 基础上 M3/S5 多局化，plan-M3 D5）：
+   * 只处理「已分配且 ∉ generatedRooms」的房间；重掷同样只碰这些房（对已生成房重掷被
+   * host 侧拒绝——mod generateRoom 是覆盖语义，防误重掷唯一防线在此）。
+   * 幂等 + 并发安全：preparePromise 互斥，后来者等待后重查 pending（新局中途分配也能补齐）。
+   * 公平性偏离中位数阈值与预算不变（≤10 / ≤3），计算域 = 本局待生成房间。
    */
   async prepareRooms(): Promise<void> {
-    if (this.roomsPrepared) return
-    if (!this.preparePromise) {
-      this.preparePromise = this.doPrepareRooms().finally(() => {
-        this.preparePromise = undefined
-      })
+    while (this.pendingRooms().length > 0) {
+      if (!this.preparePromise) {
+        const pending = this.pendingRooms()
+        this.preparePromise = this.doPrepareRooms(pending).finally(() => {
+          this.preparePromise = undefined
+        })
+      }
+      await this.preparePromise
     }
-    await this.preparePromise
   }
 
   /** journal 落盘用：席位 → 房间分配快照。 */
@@ -122,9 +132,28 @@ export class RealArena implements SeatRegistry, ArenaBackend {
     return { ...this.opts.rooms }
   }
 
-  /** journal 恢复路径（M2/S5）：跳过公平性重掷——恢复对局的房间已存在且内容已发展，重掷即破坏。 */
+  /** journal 恢复路径（M2/S5 → M3/S2 语义）：恢复局房间已存在且已发展——灌入 generatedRooms
+   *  （防新局重掷覆盖），不再有 roomsPrepared 全局标志。 */
   markRoomsPrepared(): void {
-    this.roomsPrepared = true
+    for (const room of Object.values(this.opts.rooms)) this.generatedRooms.add(room)
+  }
+
+  /**
+   * M3/S2 拆解面（plan-M3 D1/D3）：按席位定点回收——删私服用户（removeUser，含 env memory
+   * 键 + mod 进程内 console ring）+ 删房间（removeRoom，含全墙桩回插 + blob 重建 +
+   * accessible/active rooms 逆向）+ host 侧映射清理。幂等：用户/房间不存在时 mod 返回
+   * found:false 而非报错（补拆解重放安全）。失败上抛给调用方（main 层记录 + 可查面）。
+   */
+  async releaseSeat(seatId: string): Promise<void> {
+    const username = this.users.get(seatId)
+    if (username) await this.svc.system('removeUser', username)
+    const room = this.opts.rooms[seatId]
+    if (room) {
+      await this.svc.system('removeRoom', room)
+      this.generatedRooms.delete(room)
+      delete this.opts.rooms[seatId]
+    }
+    this.unbindUser(seatId)
   }
 
   /** host 侧落映射 + 私服建号（房间生成在 prepareRooms；此处 createUser + 映射落地）。
@@ -134,7 +163,7 @@ export class RealArena implements SeatRegistry, ArenaBackend {
     if (existing) throw new Error(`seat ${seatId}: already bound to ${existing}`)
     const room = this.opts.rooms[seatId]
     if (!room) throw new Error(`seat ${seatId}: no room assigned (host-side mapping only)`)
-    if (!this.roomsPrepared) await this.prepareRooms() // 惰性兑底：未显式 prepare 时建号前补齐
+    if (!this.generatedRooms.has(room)) await this.prepareRooms() // 惰性兜底：建号前补齐该席房间
     const username = `agent_${seatSlug(seatId)}`
     const user = await this.svc.createUser({
       username,

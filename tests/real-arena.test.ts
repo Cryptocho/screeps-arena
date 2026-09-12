@@ -57,8 +57,7 @@ describe('RealArena（S3）', () => {
     expect(u1.username).not.toBe(u2.username)
   })
 
-  it('submitCode：成功回 seq=timestamp；失败回 ok:false+reason（不抛）', async () => {
-    const arena = new RealArena(fakeSvc(), { rooms: {} })
+  it('submitCode：成功回 seq=timestamp；失败回 ok:false+reason（不抛）', async () => {    const arena = new RealArena(fakeSvc(), { rooms: {} })
     const ok = await arena.submitCode('agent_seat-a', { main: 'module.exports.loop=function(){}' })
     expect(ok).toEqual({ ok: true, seq: 12345 })
     const fail = new RealArena(fakeSvc({ submitCode: async () => { throw new Error('boom') } }), { rooms: {} })
@@ -145,5 +144,56 @@ describe('RealArena（S3）', () => {
     const p2 = await arena.consoleSince('agent_a')
     expect(p1.lines).toEqual([]) // 首次从 0 起
     expect(p2.lines).toEqual(['hello']) // since=5 → 有增量
+  })
+
+  // ---- M3/S2（plan-M3 D5/D1）----
+
+  it('[M3/D5] 防误重掷唯一防线：已生成房不在 prepareRooms 重掷域（不二次 generateRoom/restart）', async () => {
+    const svc = fakeSvc()
+    const arena = new RealArena(svc, { rooms: { a: 'E5N5' } })
+    await arena.bindUser('a')
+    expect(svc.system).toHaveBeenCalledTimes(1) // generateRoom ×1
+    expect(svc.restart).toHaveBeenCalledTimes(1)
+    // 新局分配第二房：prepareRooms 只碰新房，已生成房 E5N5 不被重掷
+    arena.assignRoom('b', 'E7N5')
+    await arena.prepareRooms()
+    expect(svc.system).toHaveBeenCalledWith('generateRoom', { room: 'E7N5', sources: 2 })
+    expect(svc.system).toHaveBeenCalledTimes(2) // E5N5 不重掷
+    expect(svc.restart).toHaveBeenCalledTimes(2)
+  })
+
+  it('[M3/D5] markRoomsPrepared：恢复局房间灌入 generatedRooms（新局重掷域排除）', async () => {
+    const svc = fakeSvc()
+    const arena = new RealArena(svc, { rooms: { a: 'E5N5' } })
+    arena.markRoomsPrepared()
+    await arena.bindUser('a') // 惰性兜底不再触发生成
+    expect(svc.system).not.toHaveBeenCalledWith('generateRoom', expect.anything())
+    expect(svc.restart).not.toHaveBeenCalled()
+  })
+
+  it('[M3/D1] releaseSeat：removeUser + removeRoom + host 侧映射清空；未绑定席位只删房', async () => {
+    const svc = fakeSvc()
+    const arena = new RealArena(svc, { rooms: { a: 'E5N5' } })
+    const user = await arena.bindUser('a')
+    await arena.releaseSeat('a')
+    expect(svc.system).toHaveBeenCalledWith('removeUser', user.username)
+    expect(svc.system).toHaveBeenCalledWith('removeRoom', 'E5N5')
+    expect(arena.resolveUser('a')).toBeUndefined()
+    expect(arena.roomsSnapshot()).toEqual({})
+    // 未绑定席位（建号前 settle）：只删房
+    const arena2 = new RealArena(fakeSvc(), { rooms: { x: 'E7N5' } })
+    await arena2.releaseSeat('x')
+    expect(arena2.roomsSnapshot()).toEqual({})
+  })
+
+  it('[M3/D1] releaseSeat 后同席位可重新 bind（同名重建 + 房间重新生成）', async () => {
+    const svc = fakeSvc()
+    const arena = new RealArena(svc, { rooms: { a: 'E5N5' } })
+    await arena.bindUser('a')
+    await arena.releaseSeat('a')
+    arena.assignRoom('a', 'E5N5')
+    const u2 = await arena.bindUser('a')
+    expect(u2.username).toBe(`agent_${seatSlug('a')}`)
+    expect(svc.system).toHaveBeenCalledWith('removeUser', u2.username) // 先删后建
   })
 })

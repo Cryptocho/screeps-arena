@@ -5,7 +5,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import type React from 'react'
 import type { MatchView, WorldSnapshot } from '../shared/types.js'
-import { createMatch, fetchMatch, fetchMatches, fetchTerrain, fetchWorld, settleMatch, startMatch, subscribeConsole, subscribeMatch } from './api.js'
+import { createMatch, fetchHistory, fetchMatch, fetchMatches, fetchTerrain, fetchWorld, settleMatch, startMatch, subscribeConsole, subscribeMatch } from './api.js'
+import type { HistoryView } from './api.js'
 import { TerrainCanvas } from './terrain-canvas.js'
 
 type Tab = 'lobby' | 'match'
@@ -109,6 +110,48 @@ function Lobby(props: {
                 {m.phase === 'creating' && <button onClick={() => void runAction(() => startMatch(m.id))}>start</button>}
                 {m.phase !== 'settled' && <button onClick={() => void runAction(() => settleMatch(m.id))}>settle</button>}
               </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <MatchHistoryList />
+    </div>
+  )
+}
+
+/** 对局历史（M3/S4）：settle 后的记账列表（journal 语义不含已完结局，此表全量）。 */
+function MatchHistoryList(): React.ReactElement {
+  const [history, setHistory] = useState<HistoryView[]>([])
+  useEffect(() => {
+    const load = async () => {
+      try {
+        setHistory(await fetchHistory())
+      } catch {
+        /* 历史是冷数据，拉取失败不打扰大厅 */
+      }
+    }
+    void load()
+    const t = setInterval(() => void load(), 5000)
+    return () => clearInterval(t)
+  }, [])
+  if (history.length === 0) return <></>
+  return (
+    <div style={{ marginTop: 16 }}>
+      <h3 style={{ fontSize: 13 }}>历史对局</h3>
+      <table cellPadding={4}>
+        <thead>
+          <tr><th>id</th><th>round</th><th>winner</th><th>reason</th><th>scores</th><th>ended</th><th>teardown</th></tr>
+        </thead>
+        <tbody>
+          {history.map((h) => (
+            <tr key={h.id}>
+              <td>{h.id}</td>
+              <td>{h.roundIndex}</td>
+              <td>{h.winner?.kind === 'draw' ? 'draw' : h.winner?.kind === 'seat' ? h.winner.seatId : ''}</td>
+              <td>{h.settleReason ?? ''}</td>
+              <td>{h.scores ? Object.entries(h.scores).map(([k, v]) => `${k}:${v}`).join(' ') : '—'}</td>
+              <td>{h.settledAt ? new Date(h.settledAt).toLocaleString() : ''}</td>
+              <td>{h.teardown}</td>
             </tr>
           ))}
         </tbody>

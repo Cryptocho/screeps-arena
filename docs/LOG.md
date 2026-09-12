@@ -1,5 +1,62 @@
 # 工程日志（倒序）
 
+## 2026-09-13 M3 实施（多局生命周期；待成果审查）
+
+**计划**：`docs/plan-M3.md` v3（审查闭环：一审 FAIL 11 → v2 修订 → 二审 FAIL 5 →
+v3 修订 → 三审 **PASS** + 2 非阻塞实施备注）。范围：S0 调研钉子 / S1 mod 拆解原语 /
+S2 RealArena 多局面 / S3 main 接线 / S4 对局历史 / S5 验证 / S6 文档。
+
+**S0 调研钉子（`scripts/s0-removal-probe.ts`，真实私服 exit=0，结论回填 plan-M3 附录 A）**：
+- 用户关联集合全集实测：`users.code`/`users` 本体 + `rooms.objects`（**controller.user
+  即所有权**，不清则同名重建撞 "room already owned"——当场钉出并修）；其余用户键控集合
+  建号期为 0，防御性清理保留。
+- env memory = `keys.MEMORY+uid`（resetArena 也不清，定点删除补上）；**env 集合无 srem**
+  （只有 sadd/smembers）→ ACTIVE_ROOMS 剔除走 del 整键 + 剩余 sadd 重建。
+- removeRoom 逆向闭环实测：删后对象空 + 全墙桩一行 + accessible/active 逆向 →
+  generateRoom 同名重建 → createUser 同名成功；幂等 found:false（存在性判定改按
+  db.rooms/objects——terrain 桩行会假阳性，当场钉出并修）。
+- m2-smoke 冲突清单：原 9 步均未断言 M2 拒绝语义，无需改写，增补 4 步。
+
+**交付**：
+- **S1**：mod `removeUser`（用户 + 键控集合 + `{user:id}` 对象全清〔含 controller 所有权、
+  跨房 creep 残骸〕 + memory env 键 + 进程内 consoleBuffers）与 `removeRoom`（五集合 +
+  全墙桩回插〔blob 重建前，防无桩邻房 flake〕 + accessible/active 逆向 + updateTerrainData
+  + refreshWorldMeta）+ `dbProbe` 诊断探针；系统用户拒删；双命令幂等。
+- **S2**：RealArena `releaseSeat`（unbind + 双删 + 映射清理）、`generatedRooms` 集合
+  （**防误重掷唯一防线**——mod generateRoom 是覆盖语义无 already-exists）、roomsPrepared
+  全局标志退役、prepareRooms 只处理「已分配 ∉ generatedRooms」且偏离计算只算本局房、
+  markRoomsPrepared 灌全 generatedRooms、preparePromise 互斥扩为多局并发安全。
+- **S3**：main.ts settled → history(pending) → journal.remove → machines 释放 →
+  异步 teardownMatch（dispose runners → 逐席位 releaseSeat，单席失败入可查面）→
+  history(done)；启动私服就绪后扫描 history pending 幂等补拆解（`teardown-recovered=N`）；
+  createMatch 守卫改 `pool.ts` 纯函数（可用池 = ROOM_POOL − roomsSnapshot）；池可配置
+  `--rooms`/`ARENA_ROOMS`；`teardownFailures` + `GET /api/teardown-failures`。
+- **S4**：`history.ts` MatchHistory（jsonl + id 幂等原位替换 + tmp+rename 原子整写 +
+  残行跳过）+ `GET /api/history`（Fastify 壳补两条路由——**routes.ts 纯函数加了、壳漏接
+  是冒烟当场抓到的**）+ 前端大厅「历史对局」表（5s 轮询，最小功能版）。
+- **S5**：pool/history 打表单测 + real-arena 4 条 M3 单测（含防误重掷负向：已生成房
+  不进重掷域）+ mod 3 条拆解单测；m2-smoke 增补 4 步。
+- **S6**：TEST.md §0.7/§3/§4、README、AGENTS.md 状态更新。
+
+**验证（全部实测）**：
+- `npm test` **122/122 绿**（21 文件，+18 测试）+ typecheck 零错 + build/build:client 零错。
+- S0 探针 exit=0（removeUser/removeRoom/重建/幂等闭环）。
+- `sh scripts/m2-smoke.sh` **13 步全绿**：settle→journal 清→history teardown:done→
+  **换席位再建局成功**（M2 边界消除端到端）→二次 settle→teardown-recovered=1→journal 恢复。
+- compose 重建镜像后全链：create→settle→history done→换席位再建局（RECREATE-OK）。
+
+**踩坑记录**：
+1. Fastify 壳路由是逐条显式注册的（不是纯函数表自动生效）——`/api/history` 在 routes.ts
+   加了、壳漏接 → 冒烟 404。**教训：routes.ts 与 server.ts 双处都要加**。
+2. removeRoom 存在性判定用 terrain 会假阳性（自身回插的桩行）→ 改 db.rooms/objects。
+3. env 集合无 srem（sadd/smembers only）→ del 整键 + sadd 重建。
+4. MatchHistory 首 settle 时目录不存在 ENOENT → 构造期 mkdirSync recursive。
+5. removeUser 不清 controller.user 所有权 → 同名重建撞 owned → `rooms.objects
+   removeWhere({user:id})` 全清（连带跨房残骸，比计划「接受残骸」更干净）。
+
+**遗留（M4+）**：锦标赛编排、回放/战报详情、arena-blitz、prepare 期免 restart 评估、
+单世界 vs 多世界（跨容器拆分）、表现层统一收尾。
+
 ## 2026-09-12 M2 收尾：compose 实测通过（修 2 bug）——M2 关闭
 
 Docker 环境到位后实测 compose（Docker 29.7.2 + Compose v5.4.0），**当场抓到 2 个只有

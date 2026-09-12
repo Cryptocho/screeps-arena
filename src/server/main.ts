@@ -4,17 +4,20 @@
  * dev / compose / IT **共用同一份组装**（M1 复审问题 3 教训：mock 自证而真实路径漏接）。
  *
  * CLI：node dist/server/main.mjs [--port N] [--host H] [--data-dir D] [--static-dir P]
- *      [--agent-dir P] [--model M]
+ *      [--agent-dir P] [--model M] [--rooms E5N5,E7N5,…]
  * 环境变量：OPENROUTER_API_KEY（在位时挂真实 LLM 唤醒，缺席 = 只推进时钟的观战形态）；
- *          SMOKE_BASE_URL（provider 覆盖）；ARENA_MOD_PATH（mod 路径覆盖）。
+ *          ARENA_ROOMS（房间池覆盖）；SMOKE_BASE_URL（provider 覆盖）；ARENA_MOD_PATH（mod 路径覆盖）。
  *
  * 数据布局（--data-dir，默认 <cwd>/.arena-data）：
  *   server/            = 私服 serverDir（compose 挂卷 screeps-data）
  *   journal/matches/   = 对局 journal（相位迁移原子落盘，启动扫描恢复，M2/S5）
+ *   history/           = 对局历史 jsonl（记账全量 + teardown 状态，M3/S4）
  *   agents/            = 席位工作区（seatSlug 目录，M2/S7）
  *
- * M2 范围约束：单世界单活跃对局（第二局创建拒绝）；房间池固定 E5N5/E7N5，
- * 公平性距离校验重掷在 prepareRooms（M2/S6）。多局世界/房间池扩张归 M3+。
+ * M3（plan-M3）：多活跃对局——createMatch 守卫 = 房间池可容纳（可用池 = ROOM_POOL −
+ * roomsSnapshot 在占，含 journal 恢复局）；settle → history(pending) → journal.remove →
+ * 异步定点 teardown（removeUser/removeRoom，幂等，崩溃由重启扫描 history pending 补拆解）；
+ * 启动日志 `[main] teardown-recovered=N`。
  *
  * mod 路径：默认 <cwd>/src/server/screeps/arena-mod.cjs（dev 与 compose WORKDIR=/app 均成立；
  * tsdown bundle 不复制 .cjs 附件）。容器外异目录运行用 ARENA_MOD_PATH 覆盖。
@@ -28,10 +31,13 @@ import { startHttpServer } from './http/server.js'
 import type { ArenaHttpServices } from './http/routes.js'
 import { ScreepsService, modFileFromContent } from './screeps/service.js'
 import { RealArena } from './screeps/arena.js'
+import { allocateRooms } from './pool.js'
 import { MatchMachine } from './match/machine.js'
 import type { MatchEvent } from './match/machine.js'
 import { MatchJournal } from './match/journal.js'
 import type { MatchJournalRecord } from './match/journal.js'
+import { MatchHistory } from './history.js'
+import type { MatchHistoryRecord } from './history.js'
 import { computeOutcome } from './match/score.js'
 import type { SeatScoreInput } from './match/score.js'
 import { AgentRunner } from '../agent/runner.js'
@@ -46,6 +52,8 @@ const args = parseArgs({
     'static-dir': { type: 'string' },
     'agent-dir': { type: 'string' },
     model: { type: 'string', default: 'xiaomi/mimo-v2.5' },
+    // M3/D6 房间池（缺省 E5N5,E7N5）；池大小 = 并发席位上限
+    rooms: { type: 'string' },
     // 镜像构建期私服安装口（Dockerfile RUN 段）：走 ensureRunning 链装完即停，不挂 HTTP
     'install-only': { type: 'boolean', default: false },
   },
@@ -58,7 +66,19 @@ const MODEL = args.model
 const MODEL_BASE = process.env.SMOKE_BASE_URL ?? 'https://openrouter.ai/api/v1'
 const dataDir = args['data-dir'] ?? path.join(process.cwd(), '.arena-data')
 const agentDir = args['agent-dir'] ?? path.join(dataDir, 'agents')
+// M3/D6：房间池可配置（CLI --rooms > 环境变量 ARENA_ROOMS > 默认 E5N5,E7N5）
+const ROOM_POOL = (args.rooms ?? process.env.ARENA_ROOMS ?? 'E5N5,E7N5')
+  .split(',')
+  .map((s) => s.trim())
+  .filter((s) => s !== '')
+if (ROOM_POOL.length === 0) {
+  console.error('[main] room pool empty (use --rooms "E5N5,E7N5,…")')
+  process.exit(1)
+}
 const journal = new MatchJournal(path.join(dataDir, 'journal', 'matches'))
+const history = new MatchHistory(path.join(dataDir, 'history'))
+/** teardown 失败可查面（D3）：settle 后 machine 已删、m.state.errors 不可达，独立列表 + GET。 */
+const teardownFailuresList: Array<{ matchId: string; seatId: string; error: string; at: number }> = []
 
 const defaultModPath = path.join(process.cwd(), 'src', 'server', 'screeps', 'arena-mod.cjs')
 const modPath = process.env.ARENA_MOD_PATH ?? defaultModPath
@@ -137,6 +157,54 @@ function toRecord(m: MatchMachine): MatchJournalRecord {
   }
 }
 
+/** history 记录快照（D7）：seatUsers + rooms 必须在 teardown 前取——journal.remove 后
+ *  这是补拆解唯一可还原映射的载体。 */
+function historyRecordFor(m: MatchMachine): MatchHistoryRecord {
+  const seatUsers: Record<string, string> = {}
+  for (const p of m.players) {
+    const u = arena.resolveUser(p.seatId)
+    if (u) seatUsers[p.seatId] = u
+  }
+  const rooms = Object.fromEntries(
+    Object.entries(arena.roomsSnapshot()).filter(([seatId]) => m.players.some((p) => p.seatId === seatId)),
+  )
+  return {
+    id: m.id,
+    config: m.config,
+    winner: m.state.winner ?? null,
+    settleReason: m.state.settleReason ?? null,
+    scores: m.state.scores ?? null,
+    roundIndex: m.state.roundIndex,
+    createdAt: m.state.createdAt,
+    settledAt: m.state.settledAt ?? null,
+    seatUsers,
+    rooms,
+    teardown: 'pending',
+  }
+}
+
+/** 定点 teardown（D3）：dispose runners → 逐席位 releaseSeat（removeUser + removeRoom +
+ *  host 侧映射清理，幂等）→ history 标记 done。逐席位 try/catch：单席失败入可查面，
+ *  其余席位继续；history 留 pending，重启补拆解兜底。 */
+async function teardownMatch(m: MatchMachine): Promise<void> {
+  for (const p of m.players) {
+    const runner = runners.get(p.seatId)
+    if (runner) {
+      runner.dispose()
+      runners.delete(p.seatId)
+    }
+  }
+  for (const p of m.players) {
+    try {
+      await arena.releaseSeat(p.seatId)
+    } catch (err) {
+      teardownFailuresList.push({ matchId: m.id, seatId: p.seatId, error: String(err instanceof Error ? err.message : err), at: Date.now() })
+      console.log(`[teardown] seat ${p.seatId} of ${m.id} failed:`, String(err))
+    }
+  }
+  history.markDone(m.id)
+}
+
 /** 相位迁移事件 → 唤醒 + 广播 + journal（唯一写点，同步落盘）。settled 即清 journal。
  *  闭包引用 m 本身：构造函数不 emit，首事件必然发生在构造完成后（dev-services 同款模式）。 */
 function wireMachine(m: MatchMachine): (e: MatchEvent) => void {
@@ -145,8 +213,12 @@ function wireMachine(m: MatchMachine): (e: MatchEvent) => void {
     broadcast({ type: 'match_state', match: m.id, phase: m.phase, roundIndex: m.state.roundIndex, event: e.type })
     try {
       if (e.type === 'settled') {
+        // D3 顺序：history(pending) 先落（含映射快照）→ journal.remove → machines 释放
+        // → 异步 teardown（不阻断 settle 落账）→ history(done)
+        history.upsert(historyRecordFor(m))
         journal.remove(m.id)
-        machines.delete(m.id) // 不占坑：settle 后允许再建局（单活跃约束按 phase 判定）
+        machines.delete(m.id) // 不占坑：settle 后允许再建局
+        void teardownMatch(m)
       } else {
         journal.save(toRecord(m))
       }
@@ -177,9 +249,7 @@ async function wakerFor(seatId: string): Promise<SeatWaker> {
   return { prompt: (_sid, text) => r.prompt(text) }
 }
 
-const ROOM_POOL = ['E5N5', 'E7N5']
 const machines = new Map<string, MatchMachine>()
-const usedSeats = new Set<string>()
 
 /** 惰性 waker（首唤醒时建号 + 建 AgentRunner）；无 provider 时不产生 waker（只推进时钟）。 */
 function lazyWaker(seatId: string): SeatWaker {
@@ -190,19 +260,16 @@ const services: ArenaHttpServices = {
   matches: () => [...machines.values()],
   match: (id) => machines.get(id),
   createMatch: (input) => {
-    if (machines.size > 0) throw new Error('one active match per world (M2 scope); settle it first')
-    for (const p of input.players) {
-      if (usedSeats.has(p.seatId)) continue
-      const room = ROOM_POOL[usedSeats.size]
-      if (!room) throw new Error('room pool exhausted (M2: fixed 2-room pool)')
-      arena.assignRoom(p.seatId, room)
-      usedSeats.add(p.seatId)
-    }
+    // M3/D4：守卫从「无活跃对局」改为「池可容纳」（allocation 纯函数在 pool.ts，
+    // roomsSnapshot 是唯一在占事实源——含 journal 恢复局房间）。
     const m = new MatchMachine({
       players: input.players,
       ...(input.config ? { config: input.config } : {}),
       onEvent: (e) => wireMachine(m)(e),
     })
+    for (const [seatId, room] of Object.entries(allocateRooms(ROOM_POOL, arena.roomsSnapshot(), input.players.map((p) => p.seatId)))) {
+      arena.assignRoom(seatId, room)
+    }
     machines.set(m.id, m)
     // 驱动链接线（M1 复审问题 3 教训；成果审查阻塞 1）：createMatch 必须 watch，
     // 否则 tick 恒 no-op、Agent 永不唤醒——与 dev-services 同一铁律
@@ -219,6 +286,8 @@ const services: ArenaHttpServices = {
   // 前端显示名（HTTP 建局输入）≠ agent_<slug>；未映射席位原样透传（→ bound:false 静默）
   consoleSince: (user, since) => arena.consoleSince(arena.resolveUser(user) ?? user, since),
   getScoreSnapshot: scoreSnapshotFor,
+  history: () => history.list(),
+  teardownFailures: () => [...teardownFailuresList],
 }
 
 /** journal 恢复扫描（M2/S5）：映射灌回 → 机器重建 → driver.watch；roundBreakSince 重置为恢复时刻。 */
@@ -286,10 +355,35 @@ broadcast = (e) => handle.broadcast(e)
 
 const restored = restoreFromJournal()
 driver.start()
-// 启动即拉起私服（观战形态世界常跑；不阻塞 HTTP 起服，但失败 = 主功能不可用，fail fast）
+// 启动即拉起私服（观战形态世界常跑；不阻塞 HTTP 起服，但失败 = 主功能不可用，fail fast）。
+// 私服就绪后先补拆解 history 中 teardown:pending 的残留（D3：崩溃于 pending 窗口 →
+// 幂等重放 removeUser/removeRoom），再进入正常就绪态。
 void svc
   .ensureRunning()
-  .then(({ baseUrl }) => console.log(`[main] screeps server ready at ${baseUrl}`))
+  .then(async ({ baseUrl }) => {
+    const pend = history.pending()
+    for (const rec of pend) {
+      for (const [seatId, username] of Object.entries(rec.seatUsers)) {
+        try {
+          await svc.system('removeUser', username)
+        } catch (err) {
+          teardownFailuresList.push({ matchId: rec.id, seatId, error: `recover removeUser: ${String(err)}`, at: Date.now() })
+          console.log(`[teardown] recover ${rec.id}/${seatId} removeUser failed:`, String(err))
+        }
+      }
+      for (const [seatId, room] of Object.entries(rec.rooms)) {
+        try {
+          await svc.system('removeRoom', room)
+        } catch (err) {
+          teardownFailuresList.push({ matchId: rec.id, seatId, error: `recover removeRoom: ${String(err)}`, at: Date.now() })
+          console.log(`[teardown] recover ${rec.id}/${seatId} removeRoom failed:`, String(err))
+        }
+      }
+      history.markDone(rec.id)
+    }
+    if (pend.length > 0) console.log(`[main] teardown-recovered=${pend.length} (history pending replayed)`)
+    console.log(`[main] screeps server ready at ${baseUrl}`)
+  })
   .catch((err) => {
     console.error('[main] screeps server failed:', String(err))
     process.exit(1)

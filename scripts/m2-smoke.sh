@@ -30,9 +30,22 @@ ID=$(printf '%s' "$M" | fnm exec --using=22 -- node -e 'let d="";process.stdin.o
 echo "PASS: match created id=$ID"
 
 curl -sf -X POST "http://127.0.0.1:8899/api/matches/$ID/settle" > /dev/null && echo 'PASS: settle (creating→settled)'
-sleep 1
+# M3：teardown 异步执行（prepare 先生成房间 + restart，给足窗口）
+sleep 20
 LEFT=$(ls "$DATA/journal/matches" 2>/dev/null | wc -l)
 [ "$LEFT" = "0" ] && echo 'PASS: journal lifecycle clean (no residue after settle)' || { echo "FAIL: journal left=$LEFT"; exit 1; }
+H=$(curl -sf http://127.0.0.1:8899/api/history)
+printf '%s' "$H" | grep -q "\"id\":\"$ID\"" && printf '%s' "$H" | grep -q '"teardown":"done"' \
+  && echo 'PASS: history recorded + teardown done' || { echo "FAIL: history bad: $H"; exit 1; }
+
+# M3/D4：settle 拆解后换席位再建局成功（M2 边界消除的端到端证明）
+M2=$(curl -sf -X POST http://127.0.0.1:8899/api/matches -H 'content-type: application/json' \
+  -d '{"players":[{"seatId":"sc","username":"sc"},{"seatId":"sd","username":"sd"}]}') || { echo 'FAIL: create after settle (pool not released)'; exit 1; }
+ID2=$(printf '%s' "$M2" | fnm exec --using=22 -- node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).id))')
+echo "PASS: match re-created with new seats after teardown id=$ID2"
+sleep 20
+curl -sf -X POST "http://127.0.0.1:8899/api/matches/$ID2/settle" > /dev/null && echo 'PASS: settle #2'
+sleep 3
 
 pkill -f "main.mjs --port 8899"
 sleep 3
@@ -53,12 +66,26 @@ cat > "$DATA/journal/matches/minterrupted.json" <<'EOF'
 }
 EOF
 
+# M3/D3：预置一条 teardown:pending 的 history（模拟「settle 落账后、拆解完成前崩溃」），
+# 重启后应被幂等补拆解（teardown-recovered=1）
+mkdir -p "$DATA/history"
+cat > "$DATA/history/matches.jsonl" <<EOF
+{"id":"mpending","config":{"seats":2,"roundMs":60000,"roundBreakTimeoutMs":300000,"maxRounds":8},"winner":null,"settleReason":"manual","scores":null,"roundIndex":0,"createdAt":1,"settledAt":2,"seatUsers":{"sz":"agent_ghost"},"rooms":{"sz":"E9N9"},"teardown":"pending"}
+EOF
+
 fnm exec --using=22 -- node dist/server/main.mjs --port 8899 --data-dir "$DATA" > "$LOG.2" 2>&1 &
 MAIN_PID=$!
 i=0
 while [ $i -lt 120 ]; do
-  grep -q 'journal-restored=' "$LOG.2" 2>/dev/null && break
+  grep -q 'teardown-recovered=' "$LOG.2" 2>/dev/null && break
   kill -0 $MAIN_PID 2>/dev/null || { echo 'FAIL: main died on restore'; tail -20 "$LOG.2"; exit 1; }
+  sleep 2
+  i=$((i+1))
+done
+grep -q 'teardown-recovered=1' "$LOG.2" && echo 'PASS: teardown-recovered=1 (pending replayed)' || { echo 'FAIL: teardown not recovered'; grep -i teardown "$LOG.2"; exit 1; }
+i=0
+while [ $i -lt 120 ]; do
+  grep -q 'journal-restored=' "$LOG.2" 2>/dev/null && break
   sleep 2
   i=$((i+1))
 done

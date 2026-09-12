@@ -1,8 +1,7 @@
-# TEST.md — 用户手测指导（M1 + M2）
+# TEST.md — 用户手测指导（M1 + M2 + M3）
 
-> 纪律：本文件每条命令均已由 Agent 在本环境真实执行并验证通过（2026-09-11）。
-> 需要您手测的仅限浏览器交互观感与无 Docker 环境无法自动化的容器项；
-> 未实测项均如实标注。
+> 纪律：本文件每条命令均已由 Agent 在本环境真实执行并验证通过（最近：2026-09-13 M3）。
+> 需要您手测的仅限浏览器交互观感；未实测项均如实标注。
 
 ## 0. 前置
 
@@ -41,7 +40,27 @@ docker compose up --build -d   # 构建含私服安装，首次 ≈5 分钟
   ② compose 卷挂错路径——世界库实为 `server/db.json` 文件，原挂 `server/db/` 子目录
   从未被写 → 改挂整个 `server/` 目录（named volume 首挂自动从镜像拷入）。
 
-## 1. 启动（两个终端）
+## 0.7 M3 多局生命周期（已实测 2026-09-13）
+
+M3 起：settle 后自动定点拆解（删席位用户 + 房间，幂等，崩溃重启补拆解）→ 房间池全量可复用；
+**多活跃对局**（可用池 = `--rooms` 池 − 在占房间）；对局历史 `GET /api/history`（大厅「历史对局」表）。
+
+```sh
+docker compose up --build -d   # 或裸机 node dist/server/main.mjs
+# 换席位再建局（M2 时会拒绝）→ 应成功：
+curl -s -X POST http://localhost:8787/api/matches -H 'content-type: application/json' \
+  -d '{"players":[{"seatId":"x1","username":"x1"},{"seatId":"x2","username":"x2"}]}'
+# 池耗尽（默认 2 房，建第三局 2 席位）→ 应 400 room pool exhausted；扩池：--rooms "E5N5,E7N5,E9N5,E5N7"
+curl -s http://localhost:8787/api/history   # settle 后出现记录，teardown: pending→done
+curl -s http://localhost:8787/api/teardown-failures   # 应为空
+```
+
+实测记录（2026-09-13）：S0 探针（removeUser/removeRoom/重建闭环，`scripts/s0-removal-probe.ts`
+exit=0）；m2-smoke 13 步全绿（含 history+teardown done / 换席位再建局 / teardown-recovered=1）；
+compose 全链（create→settle→history done→换席位再建局）。**注意边界**：建局 prepareRooms 完成
+时私服 restart 一次，会短暂中断他局 run/console（现有游标/重试吸收，plan-M3 D5 显式接受）。
+
+## 1. 启动（两个终端，dev mock 模式）
 
 **终端 1**（HTTP 桥，端口 8787）：
 ```sh
@@ -85,12 +104,13 @@ WS 订阅增量（M2，2s 轮询已删）；**样式仍未做**（全部功能�
 ## 3. 自动化 lane（已实测，供回归）
 
 ```sh
-fnm exec --using=22 -- npm test           # 104/104 绿（19 文件，离线 mock，零成本，≈1.7s）
+fnm exec --using=22 -- npm test           # 122/122 绿（21 文件，离线 mock，零成本，M3 含 pool/history/mod 拆解打表）
 fnm exec --using=22 -- npm run typecheck  # 零错
 fnm exec --using=22 -- npm run build && fnm exec --using=22 -- npm run build:client  # 服务端 main.mjs + vite 前端零错
 fnm exec --using=22 -- npm run test:live  # 真实私服 IT（首次安装 ≈6 分钟；M2 增补后 2/2 绿）
 OPENROUTER_API_KEY=… fnm exec --using=22 -- npm run test:smoke  # 真实 LLM 冒烟（已实测 418s 绿）
-sh scripts/m2-smoke.sh                     # M2 main.mjs 全链冒烟（9/9，含起私服 ≈6 分钟）
+sh scripts/m2-smoke.sh                     # main.mjs 全链冒烟（M3 后 13 步，含 teardown/换席位再建局/恢复）
+fnm exec --using=22 -- npx tsx scripts/s0-removal-probe.ts   # M3 拆解原语真实私服探针（幂等可重跑）
 ```
 
 > **lane 隔离说明**：`test:live` / `test:smoke` 各用独立 vitest config
@@ -104,6 +124,8 @@ sh scripts/m2-smoke.sh                     # M2 main.mjs 全链冒烟（9/9，�
 ## 4. 已知遗留
 
 - ~~compose 容器化未实测~~ → **已实测通过（2026-09-12，见 §0.6）**，M2 遗留清零。
+- M3 已落地多局生命周期（见 §0.7）；遗留：prepare 期 restart 短暂中断他局（D5 显式接受，
+  M4 评估免 restart 刷新）；锦标赛/回放/arena-blitz 归 M4+；样式统一收尾仍待全部功能后。
 - 真实计分 / WS console 流 / interrupted 恢复 / 地图公平性重掷已在 M2 落地（test:live +
   m2-smoke 实测）；端到端一局真实对局（双 Agent 真跑代码分出胜负）的浏览器完整验收，
   建议 M3 首个周期做一次实拍。

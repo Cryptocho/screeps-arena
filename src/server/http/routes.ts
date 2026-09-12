@@ -23,6 +23,20 @@ export interface ArenaHttpServices {
   consoleSince(username: string, since?: number): Promise<{ lines: unknown[]; cursor: number; bound: boolean }>
   /** 计分快照（M2/S1；可选——缺席时 settle 维持 M0 全 0 draw）。keys = seatIds。 */
   getScoreSnapshot?(seatIds: string[]): Promise<Record<string, SeatScoreInput> | undefined>
+  /** 对局历史（M3/S4；可选——缺席时路由返回空表，dev/mock lane 无需实现）。 */
+  history?(): Array<{
+    id: string
+    config: unknown
+    winner: unknown
+    settleReason: string | null
+    scores: Record<string, number> | null
+    roundIndex: number
+    createdAt: number
+    settledAt: number | null
+    teardown: string
+  }>
+  /** teardown 失败可查面（M3/D3；settle 后 machine 已删，errors 通道不可达）。 */
+  teardownFailures?(): Array<{ matchId: string; seatId: string; error: string; at: number }>
 }
 
 export interface ArenaRequest {
@@ -166,6 +180,16 @@ export async function handleArenaRequest(services: ArenaHttpServices, req: Arena
     } catch (err) {
       return bad(502, String(err instanceof Error ? err.message : err))
     }
+  }
+
+  if (pathname === '/api/history') {
+    if (method !== 'GET') return bad(405, `method ${method} not allowed`)
+    return ok({ history: services.history?.() ?? [] })
+  }
+
+  if (pathname === '/api/teardown-failures') {
+    if (method !== 'GET') return bad(405, `method ${method} not allowed`)
+    return ok({ failures: services.teardownFailures?.() ?? [] })
   }
 
   return bad(404, `no route for ${method} ${pathname}`)

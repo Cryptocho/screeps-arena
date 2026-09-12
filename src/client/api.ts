@@ -1,6 +1,24 @@
 /** 前端 API 客户端（fetch + WS 订阅；不引状态库）。 */
 import type { MatchView, WorldSnapshot } from '../shared/types.js'
 
+/** 对局历史行（M3/S4，GET /api/history 投影）。 */
+export interface HistoryView {
+  id: string
+  winner: { kind: string; seatId?: string } | null
+  settleReason: string | null
+  scores: Record<string, number> | null
+  roundIndex: number
+  createdAt: number
+  settledAt: number | null
+  teardown: string
+}
+
+export async function fetchHistory(): Promise<HistoryView[]> {
+  const res = await fetch('/api/history')
+  const body = (await res.json()) as { history: HistoryView[] }
+  return body.history
+}
+
 export async function fetchMatches(): Promise<MatchView[]> {
   const res = await fetch('/api/matches')
   const body = (await res.json()) as { matches: MatchView[] }

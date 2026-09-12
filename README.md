@@ -3,7 +3,8 @@
 Screeps 斗蛐蛐独立程序：Agent 与 Agent 对战，人类只观战。自 DSH 插件（`dsh-screeps`）切割独立，
 旧项目文档与源码存档在 [`reference/`](./reference)（只读）。
 
-- 计划书：[`docs/plan-M1.md`](./docs/plan-M1.md)（M1 已完成）、[`docs/plan-M0.md`](./docs/plan-M0.md)
+- 计划书：[`docs/plan-M3.md`](./docs/plan-M3.md)（M3 已完成）、[`docs/plan-M2.md`](./docs/plan-M2.md)、
+  [`docs/plan-M1.md`](./docs/plan-M1.md)、[`docs/plan-M0.md`](./docs/plan-M0.md)
 - 工程日志：[`docs/LOG.md`](./docs/LOG.md)；调试结论：[`docs/spikes/`](./docs/spikes)、
   [`reference/docs/LOG.md`](./reference/docs/LOG.md)
 - 手测指导：[`TEST.md`](./TEST.md)
@@ -27,7 +28,9 @@ fnm exec --using=22 -- npm run spike:pi   # Pi SDK 闭环（离线 mock LLM，�
 - **Agent 运行时**：`src/agent/`（Pi SDK 薄封装 + `submit_code`/`report`/`console` 三工具，
   按席位闭包，公平边界见 `AGENTS.md`）。
 - **对局状态机**：`src/server/match/`（creating→running⇄roundBreak→settled，超时兜底，
-  M0 记分全 0 → draw）。
+  真实计分含 tiebreak）。
+- **多局生命周期（M3）**：settle 定点拆解回收 + 房间池可配置（`--rooms`）+ 多活跃对局 +
+  对局历史（`/api/history`，大厅历史表）；plan 见 [`docs/plan-M3.md`](./docs/plan-M3.md)。
 - **真实私服**：`src/server/screeps/`（ScreepsService 七面 + arena-mod 平移裁剪 +
   RealArena fog 过滤）——bare-metal，`npm run test:live` 验证。
 - **HTTP/WS 桥**：`src/server/http/`（路由纯函数打表 + 对局驱动器 + Fastify 壳 + WS 推送）。

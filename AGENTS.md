@@ -2,21 +2,24 @@
 
 Screeps 斗蛐蛐独立程序：**对局参与者只能是 Agent（LLM 会话）**，多个 Agent 各自提交代码，在同一世界里对抗；人类只有旁观视角（大厅/地图/console 流），不进对局、不指挥、不参与。本仓库自 `dsh-screeps`（DSH 插件）切割独立，旧仓库全部重要文档与源码存档于 `reference/`（**只读参考，不参与构建**）。
 
-## 当前状态（2026-09-12）
+## 当前状态（2026-09-13）
 
-- **M0/M1/M2 全部完成关闭**：M2（真实计分 + WS console 流 + 统一组装入口 main.ts +
-  compose 容器化/数据卷 + interrupted 恢复 + 地图公平性重掷 + 席位碰撞加固）计划与成果
-  审查均已闭环 PASS，且 **compose 已于 2026-09-12 实测通过**（见 `docs/LOG.md` M2 收尾
-  条目——实测修了 Dockerfile 漏 git、compose 卷挂错路径两个 bug），M2 遗留清零。
-- **M2 验证基线（全部实测）**：`npm test` 104/104 绿（19 文件）+ typecheck 零错 +
-  `build`（dist/server/main.mjs）/`build:client` 零错；`test:live` 2/2 绿（含同房重掷实测 +
-  真实计分 + 距离偏离断言）；`scripts/m2-smoke.sh` 9/9（真实 main 全链含中断恢复）；
-  **compose 全链实测**（构建/起服/API/settle 计分/卷持久性）。
-- **M2 边界**：单世界单活跃对局（房间池 E5N5/E7N5 固定）；tiebreak（creeps→rooms→rclTotal）
-  为 M2 新增设计（用户确认）；**settle 后再建局仅同席位可行**——`machines` 已释放，但
-  `usedSeats`/`arena.rooms`/`users`/`runners` 保留（换新席位会命中房间池耗尽）；房间池扩张/
-  会话清理归 M3+。前端**表现层未做**（**用户决策：样式不并入任何功能里程碑，
-  等全部功能完成后单独统一收尾**）。
+- **M0/M1/M2/M3 全部完成关闭**：M3（多局生命周期，plan-M3 v3 审查闭环 PASS）已实施完毕——
+  settle 定点拆解回收（removeUser/removeRoom 幂等原语，崩溃由 history pending 重启补拆解）、
+  房间池可配置（`--rooms`/`ARENA_ROOMS`）、多活跃对局（池可容纳即可建局）、对局历史
+  （`GET /api/history` + 大厅历史表）。M2 的「settle 后仅同席位可再建局」「房间池固定」
+  「单活跃对局」三条边界已全部消除。验证证据见 `docs/LOG.md` M3 条目。
+- **M3 验证基线（全部实测）**：`npm test` **122/122 绿**（21 文件）+ typecheck 零错 +
+  `build`/`build:client` 零错；S0 拆解探针（`scripts/s0-removal-probe.ts`）真实私服全绿；
+  `scripts/m2-smoke.sh` M3 后 **13 步**全绿（teardown done / 换席位再建局 /
+  teardown-recovered=1 / journal 恢复）；compose 重建后全链（create→settle→history→再建局）。
+- **M2 遗留能力**（仍有效）：真实计分（tiebreak creeps→rooms→rclTotal）、WS console 流、
+  interrupted 恢复、地图公平性重掷、seatSlug 碰撞加固、compose 容器化+数据卷。
+- **M3 边界**：单世界多局共用同一世界（锦标赛形态建议多世界，M4 评估跨容器拆分）；
+  prepare 期私服 restart 短暂中断他局（D5 显式接受）；跨局进犯残骸随 removeUser 全清
+  （比原计划「接受残骸」更干净）；Agent 工作区目录跨局保留（超时兜底语义依赖）。
+- **M4+**：锦标赛编排、回放/战报详情、arena-blitz（镜像克隆）、房间可见性精确化、
+  表现层统一收尾（用户决策：不并入功能里程碑）。
 - **Pi SDK spike 已通过**：`docs/spikes/pi-sdk.md`（S1–S6 全绿 + 5 条踩坑结论）。
 - 旧项目结论索引：`reference/AGENTS.md`（交接全文）、`reference/docs/LOG.md`（工程日志）、
   `reference/docs/spikes/`（Screeps 集成面/生命周期陷阱/事件流/地图公平性等 6 份）、

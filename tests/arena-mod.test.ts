@@ -49,6 +49,14 @@ function makeDb() {
   }
   db['users.code'] = {
     insert: (doc: any) => { collections['users.code'].push({ _id: id(), ...doc }); return nowPromise(doc) },
+    find: (q: any) => nowPromise(collections['users.code'].filter((c) => matchDoc(c, q))),
+    removeWhere: (q: any) => {
+      const coll = collections['users.code']!
+      const kept = coll.filter((c) => !matchDoc(c, q))
+      coll.length = 0
+      coll.push(...kept)
+      return nowPromise(coll.length)
+    },
   }
   db['rooms.objects'] = {
     findOne: (q: any) => nowPromise(objectsColl.find((o) => matchDoc(o, q)) ?? null),
@@ -82,6 +90,7 @@ function makeDb() {
   }
   const roomsColl: any[] = collections.rooms!
   db.rooms = {
+    findOne: (q: any) => nowPromise(roomsColl.find((r) => matchDoc(r, q)) ?? null),
     find: () => nowPromise(roomsColl.slice()),
     insert: (doc: any) => { roomsColl.push({ _id: doc._id ?? id(), ...doc }); return nowPromise(doc) },
     update: (q: any, { $set }: any) => {
@@ -134,6 +143,13 @@ function makeDeps() {
     smembers: (k: string) => {
       const v = envStore.get(k)
       return nowPromise(typeof v === 'string' && v.length > 0 ? v.split('\n') : [])
+    },
+    sadd: (k: string, member: string) => {
+      const v = envStore.get(k)
+      const list = typeof v === 'string' && v.length > 0 ? v.split('\n') : []
+      if (!list.includes(member)) list.push(member)
+      envStore.set(k, list.join('\n'))
+      return nowPromise('OK')
     },
   }
   const common = {
@@ -341,5 +357,82 @@ describe('arena mod（S2 打表）', () => {
     const controller = objects.find((o) => o.type === 'controller')!
     expect(controller.user).toBe(code.user)
     expect(controller.safeMode).toBeGreaterThan(0)
+  })
+
+  // ---- M3/S1（plan-M3 D2）----
+
+  it('[M3/S1] removeUser：删用户全集（code/objects 所有权/memory env 键），幂等，系统用户拒', async () => {
+    // 预置：用户 + code + 房内对象（controller/spawn 均归 user）+ memory env 键
+    bundle.db._collections['rooms.objects'].push({ _id: 'c1', room: 'E1N1', type: 'controller', user: 'u1' })
+    bundle.db._collections['rooms.objects'].push({ _id: 's1', room: 'E1N1', type: 'spawn', user: 'u1' })
+    bundle.db._collections['users'].push({ _id: 'u1', username: 'agent_a' })
+    bundle.db._collections['users.code'].push({ _id: 'k1', user: 'u1', modules: {} })
+    bundle.envStore.set('memory:u1', '{}')
+
+    const r = await systemCmd(bundle, 'removeUser', 'agent_a')
+    expect(r.body).toMatchObject({ ok: true, removed: 'agent_a', found: true, id: 'u1' })
+    expect(bundle.db._collections['users']).toHaveLength(0)
+    expect(bundle.db._collections['users.code']).toHaveLength(0)
+    // rooms.objects 的 {user:'u1'} 全清（controller 所有权随删——同名重建不撞 owned）
+    expect(bundle.db._collections['rooms.objects']).toHaveLength(0)
+    expect(bundle.envStore.has('memory:u1')).toBe(false)
+    // 幂等：再删 found:false
+    const r2 = await systemCmd(bundle, 'removeUser', 'agent_a')
+    expect(r2.body).toMatchObject({ ok: true, found: false })
+    // 系统用户拒
+    const sys = await systemCmd(bundle, 'removeUser', 'Invader')
+    expect(sys.body?.ok).toBe(false)
+  })
+
+  it('[M3/S1] removeRoom：清五集合 + 全墙桩回插（blob 重建前）+ accessible/active 逆向 + 幂等', async () => {
+    bundle.db._collections['rooms.terrain'].push({ room: 'E1N1', terrain: '0'.repeat(2500) })
+    bundle.db._collections['rooms.objects'].push({ _id: 'c1', room: 'E1N1', type: 'controller' })
+    bundle.db._collections['rooms'].push({ _id: 'E1N1', status: 'normal' })
+    bundle.envStore.set('accessibleRooms', '["E1N1","E3N3"]')
+    bundle.envStore.set('activeRooms', 'E1N1\nE3N3')
+
+    const r = await systemCmd(bundle, 'removeRoom', 'E1N1')
+    expect(r.body).toMatchObject({ ok: true, removed: 'E1N1', found: true })
+    expect(bundle.db._collections['rooms.objects']).toHaveLength(0)
+    expect(bundle.db._collections['rooms']).toHaveLength(0)
+    // 全墙桩回插：同房恰好一行、全 '1'
+    const terrain = bundle.db._collections['rooms.terrain']
+    expect(terrain).toHaveLength(1)
+    expect(terrain[0]!.room).toBe('E1N1')
+    expect(terrain[0]!.terrain).toBe('1'.repeat(2500))
+    // env 逆向：accessibleRooms 剔除本房、activeRooms del+sadd 重建（他局房保留）
+    expect(JSON.parse(String(bundle.envStore.get('accessibleRooms')))).toEqual(['E3N3'])
+    expect(bundle.envStore.get('activeRooms')?.split('\n')).toEqual(['E3N3'])
+    // blob 重建 + VM 元数据刷新
+    expect(bundle.cliMapCalls).toContain('updateTerrainData')
+    expect(bundle.driverCalls).toContain('updateAccessibleRoomsList')
+    expect(bundle.driverCalls).toContain('updateRoomStatusData')
+    // 幂等：不存在房 → found:false（不再动 cliMap）
+    const callsBefore = bundle.cliMapCalls.length
+    const r2 = await systemCmd(bundle, 'removeRoom', 'E1N1')
+    expect(r2.body).toMatchObject({ ok: true, found: false })
+    expect(bundle.cliMapCalls.length).toBe(callsBefore)
+  })
+
+  it('[M3/S1] dbProbe：按 username 清点关联行数 + memory 键字节；按 id 清点（删号后残留检测）', async () => {
+    bundle.db._collections['users'].push({ _id: 'u1', username: 'agent_a' })
+    bundle.db._collections['users.code'].push({ _id: 'k1', user: 'u1' })
+    bundle.db._collections['rooms.objects'].push({ _id: 'c1', room: 'E1N1', type: 'controller', user: 'u1' })
+    bundle.envStore.set('memory:u1', '{"x":1}')
+
+    const byName = await systemCmd(bundle, 'dbProbe', 'agent_a')
+    expect(byName.body?.user).toMatchObject({ _id: 'u1' })
+    const rows = Object.fromEntries(byName.body?.rows ?? [])
+    expect(rows['users']).toBe(1)
+    expect(rows['users.code']).toBe(1)
+    expect(rows['rooms.objects']).toBe(1)
+    expect(byName.body?.memoryKeyBytes).toBe(7)
+    // 删号后按 id 清点（此时 username 查不到）
+    await systemCmd(bundle, 'removeUser', 'agent_a')
+    const byId = await systemCmd(bundle, 'dbProbe', { id: 'u1' })
+    const rows2 = Object.fromEntries(byId.body?.rows ?? [])
+    expect(rows2['users']).toBe(0)
+    expect(rows2['rooms.objects']).toBe(0)
+    expect(byId.body?.memoryKeyBytes).toBe(null)
   })
 })

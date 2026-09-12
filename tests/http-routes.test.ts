@@ -87,4 +87,23 @@ describe('HTTP 路由打表（S4）', () => {
     const mna = await handleArenaRequest(svc, { method: 'DELETE', pathname: '/api/matches' })
     expect(mna.status).toBe(405)
   })
+
+  it('[M3/S4] GET /api/history + /api/teardown-failures：服务面缺席返回空表，在位时透传', async () => {
+    const svc = fakeServices()
+    const empty = await handleArenaRequest(svc, { method: 'GET', pathname: '/api/history' })
+    expect(empty.json).toEqual({ history: [] })
+    const emptyF = await handleArenaRequest(svc, { method: 'GET', pathname: '/api/teardown-failures' })
+    expect(emptyF.json).toEqual({ failures: [] })
+    const full = await handleArenaRequest(
+      {
+        ...svc,
+        history: () => [{ id: 'm1', config: {}, winner: null, settleReason: 'manual', scores: null, roundIndex: 0, createdAt: 1, settledAt: 2, teardown: 'done' }],
+        teardownFailures: () => [{ matchId: 'm1', seatId: 'a', error: 'boom', at: 3 }],
+      },
+      { method: 'GET', pathname: '/api/history' },
+    )
+    expect((full.json as { history: Array<{ id: string }> }).history[0]!.id).toBe('m1')
+    const post = await handleArenaRequest(svc, { method: 'POST', pathname: '/api/history' })
+    expect(post.status).toBe(405)
+  })
 })

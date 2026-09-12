@@ -181,6 +181,14 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
     const r = await routeHandler({ method: 'GET', url: req.url })
     return reply.code(r.status).send(r.json)
   })
+  app.get('/api/history', async (req, reply) => {
+    const r = await routeHandler({ method: 'GET', url: req.url })
+    return reply.code(r.status).send(r.json)
+  })
+  app.get('/api/teardown-failures', async (req, reply) => {
+    const r = await routeHandler({ method: 'GET', url: req.url })
+    return reply.code(r.status).send(r.json)
+  })
 
   if (opts.staticDir) {
     await app.register(fastifyStatic, { root: opts.staticDir, prefix: '/' })

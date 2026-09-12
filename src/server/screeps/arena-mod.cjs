@@ -669,6 +669,213 @@
     return rows.join('')
   }
 
+  /**
+   * M3/S1 定点拆解原语（plan-M3 D2）。与 resetArena（全场清空）相对：按用户/按房删除，
+   * 多活跃对局下 settle 只拆解本局席位，不碰他局世界。
+   */
+
+  /** 用户关联集合全集（removeUser 按 user 字段清理；resetArena 清场清单的按用户子集）。 */
+  var USER_KEYED_COLLECTIONS = [
+    'users.code', 'users.intents', 'users.notifications', 'users.resources',
+    'users.money', 'users.console', 'users.power_creeps', 'market.orders',
+  ]
+  var SYSTEM_USERNAMES = ['Invader', 'Source Keeper']
+
+  function removeUser(username) {
+    if (typeof username !== 'string' || SYSTEM_USERNAMES.indexOf(username) !== -1) {
+      return Promise.reject('removeUser requires a non-system username')
+    }
+    var d = deps()
+    var db = d.common.storage.db
+    var env = d.common.storage.env
+    return db.users.findOne({ username: username }).then(function (user) {
+      if (!user) return { removed: username, found: false }
+      var id = user._id
+      return Promise.all(
+        USER_KEYED_COLLECTIONS.map(function (c) {
+          try {
+            return db[c] && typeof db[c].removeWhere === 'function'
+              ? db[c].removeWhere({ user: id })
+              : Promise.resolve(null)
+          } catch (e) {
+            return Promise.resolve(null)
+          }
+        }),
+      )
+        .then(function () {
+          // 交易两侧都是用户字段（sender/receiver），选择器引擎支持 $and 同款 $or
+          try {
+            return db.transactions.removeWhere({ $or: [{ sender: id }, { receiver: id }] })
+          } catch (e) {
+            return Promise.resolve(null)
+          }
+        })
+        .then(function () {
+          // 用户对象全集（含 controller.user 所有权——createUser 的 owned 检查即查它；
+          // 不清则同名重建撞 "room already owned"）。跨房 creep 残骸一并清，不留孤儿 owner。
+          return db['rooms.objects'].removeWhere({ user: id })
+        })
+        .then(function () {
+          return db.users.removeWhere({ _id: id })
+        })
+        .then(function () {
+          return env.del(env.keys.MEMORY + id) // 用户 memory 是 env 键（realCreateUser 同款），resetArena 也不清——定点删必须清
+        })
+        .then(function () {
+          delete consoleBuffers[id] // 进程内 console ring 按 userId 键控，删号同步清防泄漏
+          return { removed: username, found: true, id: id }
+        })
+    })
+  }
+
+  function removeAccessibleRoom(roomName) {
+    var env = deps().common.storage.env
+    return env.get(env.keys.ACCESSIBLE_ROOMS).then(function (data) {
+      var list = []
+      if (typeof data === 'string' && data.length > 0) {
+        try {
+          list = JSON.parse(data)
+        } catch (e) {
+          list = []
+        }
+      } else if (Array.isArray(data)) {
+        list = data
+      }
+      var next = list.filter(function (r) {
+        return r !== roomName
+      })
+      if (next.length === list.length) return false
+      return env.set(env.keys.ACCESSIBLE_ROOMS, JSON.stringify(next)).then(function () {
+        return true
+      })
+    })
+  }
+
+  /**
+   * removeRoom：删房 + 完整逆向 generateRoom 链路（plan-M3 D2 ①-⑤）：
+   * ① 三集合（objects/terrain/rooms 元数据）+ rooms.intents/rooms.flags；
+   * ⑤ 删 terrain 后、updateTerrainData 重建 blob 前，对被删房插回全墙桩——
+   *    否则该房成为「未生成房」，活跃邻房 A* 探测即 "Could not load terrain data"（m0-flake §三）；
+   * ③ ACCESSIBLE_ROOMS 移除 + ACTIVE_ROOMS（env set）srem；
+   * ② updateTerrainData 重建 runner 地形 blob + refreshWorldMeta 重建 VM 元数据。
+   * 「不删他局房间/桩房」的防御在 host 侧（RealArena 只对本局房间发起），mod 层无跨局知识。
+   */
+  function removeRoom(roomName) {
+    if (typeof roomName !== 'string' || !/^[WE]\d+[NS]\d+$/.test(roomName)) {
+      return Promise.reject('removeRoom requires room name as value')
+    }
+    var d = deps()
+    var db = d.common.storage.db
+    var env = d.common.storage.env
+    return Promise.all([
+      db.rooms.findOne({ _id: roomName }),
+      db['rooms.objects'].findOne({ room: roomName }),
+    ])
+      .then(function (found) {
+        // 存在性判定不能用 terrain（removeRoom 自身会留全墙桩行——桩房 = 已删）
+        if (!found[0] && !found[1]) return { removed: roomName, found: false }
+        return Promise.resolve()
+          .then(function () {
+            return db['rooms.objects'].removeWhere({ room: roomName })
+          })
+          .then(function () {
+            // intents/flags 集合在精简部署可能未注册——缺则跳过（removeWhere 一并防御）
+            var extra = ['rooms.intents', 'rooms.flags']
+            return Promise.all(extra.map(function (c) {
+              try {
+                return db[c] && typeof db[c].removeWhere === 'function'
+                  ? db[c].removeWhere({ room: roomName })
+                  : Promise.resolve(null)
+              } catch (e) {
+                return Promise.resolve(null)
+              }
+            }))
+          })
+          .then(function () {
+            return db.rooms.removeWhere({ _id: roomName })
+          })
+          .then(function () {
+            return db['rooms.terrain'].removeWhere({ room: roomName })
+          })
+          // ⑤ 全墙桩插回（addWalledNeighbors 同款形态：全 '1'，2500 格）
+          .then(function () {
+            return db['rooms.terrain'].insert({ room: roomName, terrain: '1'.repeat(2500) })
+          })
+          .then(function () {
+            return removeAccessibleRoom(roomName)
+          })
+          .then(function () {
+            // env 集合无 srem（S0 实测：wrapper 只有 sadd/smembers）→ del 整键后
+            // 对剩余成员逐一 sadd 重建（他局房不受损）
+            return env.smembers(env.keys.ACTIVE_ROOMS).then(function (list) {
+              if (!Array.isArray(list) || list.indexOf(roomName) === -1) return null
+              var rest = list.filter(function (r) {
+                return r !== roomName
+              })
+              return env.del(env.keys.ACTIVE_ROOMS).then(function () {
+                return Promise.all(rest.map(function (r) {
+                  return env.sadd(env.keys.ACTIVE_ROOMS, r)
+                }))
+              })
+            })
+          })
+          // ② blob 重建（桩插入晚于 stock update 时序，generateRoom 同款教训）
+          .then(function () {
+            return d.cliMap.updateTerrainData()
+          })
+          .then(function () {
+            return refreshWorldMeta()
+          })
+          .then(function () {
+            return { removed: roomName, found: true }
+          })
+      })
+  }
+
+  /**
+   * [M3/S0 诊断探针] 按 username 逐集合清点关联行数 + env memory 键存在性——
+   * removeUser 前后各调一次即可钉出「用户关联集合/env 键全集」实测清单（plan-M3 附录 A）。
+   */
+  function dbProbe(value) {
+    var d = deps()
+    var db = d.common.storage.db
+    var env = d.common.storage.env
+    // 两种入参：string=username（含 user 行）；{id}=按 id 直接清点（删号后残留检测）
+    var byId = value && typeof value === 'object' && typeof value.id === 'string' ? value.id : null
+    if (!byId && typeof value !== 'string') return Promise.reject('dbProbe requires username string or {id}')
+    var lookup = byId
+      ? Promise.resolve({ _id: byId, username: null })
+      : db.users.findOne({ username: value })
+    return lookup.then(function (user) {
+      if (!user) return { user: null }
+      var id = user._id
+      var counted = USER_KEYED_COLLECTIONS.concat(['transactions', 'users', 'rooms.objects'])
+      var selectors = {
+        transactions: { $or: [{ sender: id }, { receiver: id }] },
+        users: { _id: id },
+        'rooms.objects': { user: id },
+      }
+      return Promise.all(
+        counted.map(function (c) {
+          try {
+            if (!db[c] || typeof db[c].find !== 'function') return Promise.resolve([c, null])
+            return db[c]
+              .find(selectors[c] || { user: id })
+              .then(function (rows) {
+                return [c, rows.length]
+              })
+          } catch (e) {
+            return Promise.resolve([c, null])
+          }
+        }),
+      ).then(function (rows) {
+        return env.get(env.keys.MEMORY + id).then(function (mem) {
+          return { user: { _id: id, username: user.username }, rows: rows, memoryKeyBytes: mem == null ? null : String(mem).length }
+        })
+      })
+    })
+  }
+
   function systemCommand(cmd, value) {
     var d = deps()
     var common = d.common
@@ -742,6 +949,12 @@
         return common.storage.resetAllData().then(function () { return ensureRoomStatusData() }).then(function () { return { reset: true } })
       case 'resetArena':
         return resetArena()
+      case 'removeUser':
+        return removeUser(value)
+      case 'removeRoom':
+        return removeRoom(value)
+      case 'dbProbe':
+        return dbProbe(value)
       case 'generateRoom': {
         // 兼容字符串入参（旧调用）与 {room, exits} 对象入参（M2 战斗 IT 用 exits 开出口）
         var roomName = typeof value === 'string' ? value : value && typeof value.room === 'string' ? value.room : null

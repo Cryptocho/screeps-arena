@@ -161,7 +161,22 @@
 - 锦标赛（多局编排 + 淘汰/循环赛制）、回放/历史战报详情、arena-blitz（镜像克隆 mod 级）、
   单世界 vs 多世界（跨容器拆分评估）、房间可见性精确化、表现层统一收尾。
 
-## 附录 A — S0 实测结论（实施时回填）
+## 附录 A — S0 实测结论（2026-09-12 回填，探针 `scripts/s0-removal-probe.ts` 全绿）
 
-（待 S0 live 实测后回填：用户关联集合全集、env 键清单、removeRoom 逆向必要性、
-generateRoom 覆盖语义核对、m2-smoke 冲突步清单。）
+- **用户关联集合全集（实测）**：`users.code`（1 行/user）+ `users` 本体 + `rooms.objects`
+  （controller+spawn 共 2 行，**controller.user 即所有权**——不清则同名重建撞
+  "room already owned"，实测钉出）；`users.intents/notifications/resources/money/console/
+  power_creeps`、`market.orders`、`transactions` 建号期为 0，按 `{user:id}`/`$or` 侧防御性
+  清理（路径保留，实测无残留）。
+- **env 键**：memory = `env.keys.MEMORY + uid`（建号写 `'{}'`，removeUser 后实测
+  memoryKeyBytes=null 即已清）。**resetArena 也不清此键**（已知差额，定点删除补上了）。
+- **env 集合 API 差额（实测钉出）**：storage env wrapper 只有 `sadd`/`smembers`，
+  **无 `srem`**——ACTIVE_ROOMS 剔除走「del 整键 + 剩余成员逐一 sadd 重建」。
+- **removeRoom 逆向（实测）**：删后 roomObjects 空、terrain 恰一行全墙桩、
+  accessibleRooms 剔除本房、activeRooms 重建后不含本房；`generateRoom` 同名重建 →
+  roomObjects 恢复（controller+source+mineral）→ createUser 同名成功。闭环成立。
+- **幂等**：removeUser/removeRoom 对不存在目标返回 `found:false`（removeRoom 存在性判定
+  不得用 terrain——桩行会假阳性，改按 db.rooms/objects 判）。
+- **m2-smoke 冲突清单（S0-④）**：原 9 步均未断言 M2 的「单活跃/换席位拒绝」语义，
+  **无需改写**；M3 增补 4 步（history+teardown done、换席位再建局、二次 settle、
+  teardown-recovered=1）。
