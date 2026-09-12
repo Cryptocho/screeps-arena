@@ -3,7 +3,7 @@
  * 多活跃对局、恢复局占池（roomsSnapshot 为唯一事实源）、teardown 瞬时拒绝语义。
  */
 import { describe, expect, it } from 'vitest'
-import { allocateRooms, RoomPoolExhaustedError } from '../src/server/pool.js'
+import { allocateRooms, assertSeatsFree, RoomPoolExhaustedError, SeatInUseError } from '../src/server/pool.js'
 
 describe('allocateRooms（M3/D4）', () => {
   const pool = ['E5N5', 'E7N5', 'E9N5', 'E5N7']
@@ -35,5 +35,11 @@ describe('allocateRooms（M3/D4）', () => {
   it('同席位重复出现在请求中：只占一房', () => {
     const result = allocateRooms(pool, {}, ['a', 'a'])
     expect(result).toEqual({ a: 'E5N5' })
+  })
+
+  it('[审查阻塞 3] assertSeatsFree：活跃席位拒绝复用（前端默认席位名场景），空闲席位放行', () => {
+    expect(() => assertSeatsFree(['seat-a', 'seat-b'], ['seat-a', 'x'])).toThrow(SeatInUseError)
+    expect(() => assertSeatsFree([], ['seat-a', 'seat-b'])).not.toThrow()
+    expect(() => assertSeatsFree(['seat-a'], ['seat-a'])).toThrow(/seat-a/) // 消息含席位名
   })
 })

@@ -1,5 +1,32 @@
 # 工程日志（倒序）
 
+## 2026-09-13 M3 成果审查一轮：FAIL 3 阻塞 → 修复（待复审）
+
+**一审结论**：FAIL——① 验收判据 2（test:live 增补段）整段缺失且未声明缩水，m2-smoke 的
+teardown-recovered 用的是幽灵记录（found:false），不证明真删；② S5「双对局并存」stub IT
+缩水成纯函数打表；③ **跨对局 seatId 无守卫**（前端默认席位名即可触发：静默共享映射/
+teardown 窗口误删新对局用户）。非阻塞 4：settle×prepare 竞态孤儿房、恢复局+pending 并存
+泄漏（核实为不成立——upsert 与 journal.remove 同 tick 同步相邻，崩溃窗口不存在，已注释
+为证）、teardown rejection 未捕获、TEST.md test:live 旧计数。
+
+**修复**：
+- 阻塞 1：test:live 增补 2 段全绿（4/4）——removeUser/removeRoom 重建闭环 + **被删房与
+  活跃房相邻**（活跃房 terrain/controller/spawn 不受损，被删房恰一行全墙桩）；
+  **崩溃恢复真实残留**（createUser+generateRoom 造真残留 → `recoverPendingTeardowns`
+  → 用户出世界/房对象清/terrain 桩/done/幂等收敛 0）——恢复逻辑抽到
+  `src/server/teardown.ts` 供 main 与 IT 共用同一段代码。
+- 阻塞 2：新增 `tests/multi-match.it.test.ts`（真实 RealArena + MatchMachine 装置）：
+  双局并存房间不重叠、settle 拆解后另一局映射/房间完好且零 generateRoom、全池真实
+  roomsSnapshot 复用、席位易主跳过删除。
+- 阻塞 3：createMatch 守卫 `assertSeatsFree`（pool.ts 纯函数，活跃席位拒绝复用，前端
+  默认席位名二局创建得清晰 400）；`releaseSeat(seatId, expected?)` 按 settle 快照校验
+  归属——席位/房间易主即跳过删除且不抹新映射。
+- 非阻塞：releaseSeat 前 await preparePromise + doPrepareRooms 收尾只标记仍在分配的房
+  （孤儿房/假 generated 消除）；teardownMatch 加 .catch 入可查面；TEST.md 计数更新。
+
+**验证**：`npm test` **124/124**（22 文件）+ typecheck 零错 + build/build:client 零错；
+`test:live` **4/4**；m2-smoke **13 步全绿**（重跑无回归）。
+
 ## 2026-09-13 M3 实施（多局生命周期；待成果审查）
 
 **计划**：`docs/plan-M3.md` v3（审查闭环：一审 FAIL 11 → v2 修订 → 二审 FAIL 5 →

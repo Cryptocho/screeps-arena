@@ -11,6 +11,21 @@ export class RoomPoolExhaustedError extends Error {
   }
 }
 
+export class SeatInUseError extends Error {
+  constructor(seatIds: string[]) {
+    super(`seat(s) already in use by an active match: ${seatIds.join(', ')}`)
+    this.name = 'SeatInUseError'
+  }
+}
+
+/** 跨对局 seatId 守卫（成果审查阻塞 3）：活跃对局占用的 seatId 拒绝复用——否则新局会
+ *  静默共享旧局房间映射（bindUser "already bound"）或 teardown 窗口内被误删。 */
+export function assertSeatsFree(activeSeatIds: Iterable<string>, seatIds: string[]): void {
+  const active = new Set(activeSeatIds)
+  const taken = [...new Set(seatIds.filter((s) => active.has(s)))]
+  if (taken.length > 0) throw new SeatInUseError(taken)
+}
+
 /** 返回本局新增分配（已占席位复用原房间，不出现在结果中）；池不足抛 RoomPoolExhaustedError。 */
 export function allocateRooms(
   pool: string[],

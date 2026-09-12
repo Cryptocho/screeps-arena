@@ -56,7 +56,8 @@ curl -s http://localhost:8787/api/teardown-failures   # 应为空
 ```
 
 实测记录（2026-09-13）：S0 探针（removeUser/removeRoom/重建闭环，`scripts/s0-removal-probe.ts`
-exit=0）；m2-smoke 13 步全绿（含 history+teardown done / 换席位再建局 / teardown-recovered=1）；
+exit=0）；test:live 4/4（M3 增补：拆解闭环+相邻房活跃房不受损+崩溃恢复真实残留补拆解）；
+m2-smoke 13 步全绿（含 history+teardown done / 换席位再建局 / teardown-recovered=1）；
 compose 全链（create→settle→history done→换席位再建局）。**注意边界**：建局 prepareRooms 完成
 时私服 restart 一次，会短暂中断他局 run/console（现有游标/重试吸收，plan-M3 D5 显式接受）。
 
@@ -107,7 +108,7 @@ WS 订阅增量（M2，2s 轮询已删）；**样式仍未做**（全部功能�
 fnm exec --using=22 -- npm test           # 122/122 绿（21 文件，离线 mock，零成本，M3 含 pool/history/mod 拆解打表）
 fnm exec --using=22 -- npm run typecheck  # 零错
 fnm exec --using=22 -- npm run build && fnm exec --using=22 -- npm run build:client  # 服务端 main.mjs + vite 前端零错
-fnm exec --using=22 -- npm run test:live  # 真实私服 IT（首次安装 ≈6 分钟；M2 增补后 2/2 绿）
+fnm exec --using=22 -- npm run test:live  # 真实私服 IT（首次安装 ≈6 分钟；M3 增补后 4/4 绿，含拆解闭环+相邻房+崩溃恢复）
 OPENROUTER_API_KEY=… fnm exec --using=22 -- npm run test:smoke  # 真实 LLM 冒烟（已实测 418s 绿）
 sh scripts/m2-smoke.sh                     # main.mjs 全链冒烟（M3 后 13 步，含 teardown/换席位再建局/恢复）
 fnm exec --using=22 -- npx tsx scripts/s0-removal-probe.ts   # M3 拆解原语真实私服探针（幂等可重跑）

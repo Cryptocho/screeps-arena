@@ -17,6 +17,8 @@ import { computeOutcome } from '../src/server/match/score.js'
 import type { SeatScoreInput } from '../src/server/match/score.js'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { MatchHistory } from '../src/server/history.js'
+import { recoverPendingTeardowns } from '../src/server/teardown.js'
 
 const modPath = fileURLToPath(new URL('../src/server/screeps/arena-mod.cjs', import.meta.url))
 
@@ -135,5 +137,85 @@ describe('ScreepsService 真实私服（live）', () => {
     // spawn 刚部署（双活）→ draw，但 scores 非全 0（真实计数接通，M0 全 0 语义退役）
     expect(m.state.winner).toEqual({ kind: 'draw' })
     expect(Object.values(m.state.scores!).some((v) => v > 0)).toBe(true)
+  }, 600_000)
+
+  // ---- M3 增补段（plan-M3 验收判据 2；成果审查阻塞 1）----
+
+  it('M3：removeUser→removeRoom→重建闭环 + 被删房与活跃房相邻形态（活跃房不受损）', async () => {
+    await svc.ensureRunning()
+    // 相邻房对：E11N5 与 E11N6 相邻（8 邻）。活跃房 E11N6 生成 + 建号；被删房 E11N5 相邻
+    await svc.system('generateRoom', { room: 'E11N6', sources: 2 })
+    await svc.system('generateRoom', { room: 'E11N5', sources: 2 })
+    const u = await svc.createUser({ username: 'm3_live_a', room: 'E11N6', cpu: 100 })
+
+    // removeRoom 被删房（与活跃房相邻）：terrain 恰一行全墙桩；活跃房不受损
+    await svc.system('removeRoom', 'E11N5')
+    const removedTerrain = await svc.getTerrain(['E11N5'])
+    expect(removedTerrain.terrain.E11N5).toBe('1'.repeat(2500))
+    const activeTerrain = await svc.getTerrain(['E11N6'])
+    expect(activeTerrain.terrain.E11N6).toHaveLength(2500)
+    expect(activeTerrain.terrain.E11N6).not.toBe('1'.repeat(2500))
+    const activeObjects = await svc.getRoomObjects('E11N6')
+    expect(activeObjects.some((o) => o.type === 'controller')).toBe(true)
+    expect(activeObjects.some((o) => o.type === 'spawn')).toBe(true)
+
+    // removeUser（该用户自己的席位拆解）：用户出世界；其 controller/spawn 所有权对象随删
+    // （同名重建不撞 owned）
+    await svc.system('removeUser', 'm3_live_a')
+    let world = await svc.getWorld()
+    expect(world.users.some((x) => x.username === 'm3_live_a')).toBe(false)
+    await svc.system('removeRoom', 'E11N6')
+    const afterObjects = await svc.getRoomObjects('E11N6')
+    expect(afterObjects.some((o) => o.type === 'controller')).toBe(false)
+
+    // 闭环：E11N5 重新 generateRoom → 同名 user 建号进被删过的房
+    await svc.system('generateRoom', { room: 'E11N5', sources: 2 })
+    const rebuilt = await svc.createUser({ username: 'm3_live_a', room: 'E11N5', cpu: 100 })
+    world = await svc.getWorld()
+    expect(world.users.some((x) => x.username === rebuilt.username)).toBe(true)
+    // 幂等：再删不存在的
+    await svc.system('removeUser', 'm3_never_existed')
+    await svc.system('removeRoom', 'E11N9')
+  }, 600_000)
+
+  it('M3：teardown 崩溃恢复——真实残留 + history pending → recoverPendingTeardowns 补拆解', async () => {
+    await svc.ensureRunning()
+    // 造真实残留：房 + 用户（等价于 settle 落账 pending 后、拆解完成前崩溃）
+    await svc.system('generateRoom', { room: 'E13N5', sources: 2 })
+    const u = await svc.createUser({ username: 'm3_crash_user', room: 'E13N5', cpu: 100 })
+    const histDir = mkdtempSync(join(tmpdir(), 'm3-hist-'))
+    const hist = new MatchHistory(histDir)
+    hist.upsert({
+      id: 'mcrash',
+      config: { seats: 2, roundMs: 60000, roundBreakTimeoutMs: 300000, maxRounds: 8 },
+      winner: { kind: 'draw' }, settleReason: 'manual', scores: null, roundIndex: 0,
+      createdAt: 1, settledAt: 2,
+      seatUsers: { s: 'm3_crash_user' },
+      rooms: { s: 'E13N5' },
+      teardown: 'pending',
+    })
+
+    // 同一段代码（main.ts 启动恢复用 recoverPendingTeardowns）补拆解
+    const failures: string[] = []
+    const recovered = await recoverPendingTeardowns({
+      system: (cmd, value) => svc.system(cmd, value),
+      pending: hist.pending(),
+      markDone: (id) => hist.markDone(id),
+      onFail: (_m: string, _s: string, e: string) => failures.push(e),
+    })
+    expect(recovered).toBe(1)
+    expect(failures).toEqual([])
+
+    // 残留真被删掉（非幽灵 found:false）：用户出世界、房对象清空、terrain 全墙桩
+    const world = await svc.getWorld()
+    expect(world.users.some((x) => x.username === 'm3_crash_user')).toBe(false)
+    const objs = await svc.system('roomObjects', 'E13N5')
+    expect((objs as { objects: unknown[] }).objects).toHaveLength(0)
+    const terrain = await svc.getTerrain(['E13N5'])
+    expect(terrain.terrain.E13N5).toBe('1'.repeat(2500))
+    // history 标记 done；再跑恢复 = 0（幂等收敛）
+    expect(hist.pending()).toHaveLength(0)
+    expect(await recoverPendingTeardowns({ system: (c: string, v?: unknown) => svc.system(c, v), pending: hist.pending(), markDone: (id: string) => hist.markDone(id) })).toBe(0)
+    rmSync(histDir, { recursive: true, force: true })
   }, 600_000)
 })

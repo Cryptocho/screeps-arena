@@ -105,7 +105,12 @@ export class RealArena implements SeatRegistry, ArenaBackend {
     // prepare 互斥 + 中断窗口显式接受，观战/runner 由现有游标与重试吸收）。
     // 注意：公平性偏离按「本局待生成房间集合」计算（M2 全局语义随 roomsPrepared 一并退役）。
     await this.svc.restart({ resume: true })
-    for (const room of pending) this.generatedRooms.add(room)
+    // 成果审查非阻塞 4：prepare 在飞期间房间可能已被 settle 拆解（映射已删）——
+    // 只把「仍在分配中」的房标记为已生成，否则孤儿房被永久假标记
+    const assigned = new Set(Object.values(this.opts.rooms))
+    for (const room of pending) {
+      if (assigned.has(room)) this.generatedRooms.add(room)
+    }
   }
 
   /**
@@ -143,17 +148,36 @@ export class RealArena implements SeatRegistry, ArenaBackend {
    * 键 + mod 进程内 console ring）+ 删房间（removeRoom，含全墙桩回插 + blob 重建 +
    * accessible/active rooms 逆向）+ host 侧映射清理。幂等：用户/房间不存在时 mod 返回
    * found:false 而非报错（补拆解重放安全）。失败上抛给调用方（main 层记录 + 可查面）。
+   *
+   * expected（成果审查阻塞 3）：teardown 必须传 settle 时快照的 {username, room}——
+   * 异步拆解窗口内席位可能已被新对局复用（同名 seatId），此时按当前映射删会误删新对局的
+   * 用户/房间。expected 与当前映射不一致 → 跳过删除（席位已易主，新对局接管）。
    */
-  async releaseSeat(seatId: string): Promise<void> {
-    const username = this.users.get(seatId)
-    if (username) await this.svc.system('removeUser', username)
-    const room = this.opts.rooms[seatId]
-    if (room) {
-      await this.svc.system('removeRoom', room)
-      this.generatedRooms.delete(room)
-      delete this.opts.rooms[seatId]
+  async releaseSeat(seatId: string, expected?: { username?: string; room?: string }): Promise<void> {
+    // prepare 在飞时等它收口（否则 in-flight generateRoom 可能在删除后重建孤儿房）
+    if (this.preparePromise) await this.preparePromise
+    const username = expected?.username ?? this.users.get(seatId)
+    const room = expected?.room ?? this.opts.rooms[seatId]
+    if (username) {
+      if (this.users.get(seatId) !== username) {
+        this.opts.log?.(`releaseSeat ${seatId}: seat reused (bound to ${this.users.get(seatId) ?? 'nothing'}, expected ${username}) — skip removeUser`)
+      } else {
+        await this.svc.system('removeUser', username)
+      }
     }
-    this.unbindUser(seatId)
+    if (room) {
+      if (this.opts.rooms[seatId] !== room) {
+        this.opts.log?.(`releaseSeat ${seatId}: room ${room} no longer assigned — skip removeRoom`)
+      } else {
+        await this.svc.system('removeRoom', room)
+        this.generatedRooms.delete(room)
+        delete this.opts.rooms[seatId]
+      }
+    }
+    // 席位未被新对局复用才清映射（否则会抹掉新对局的绑定）
+    if (!expected || expected.username === undefined || this.users.get(seatId) === expected.username) {
+      this.unbindUser(seatId)
+    }
   }
 
   /** host 侧落映射 + 私服建号（房间生成在 prepareRooms；此处 createUser + 映射落地）。

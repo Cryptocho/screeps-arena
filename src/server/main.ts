@@ -31,7 +31,8 @@ import { startHttpServer } from './http/server.js'
 import type { ArenaHttpServices } from './http/routes.js'
 import { ScreepsService, modFileFromContent } from './screeps/service.js'
 import { RealArena } from './screeps/arena.js'
-import { allocateRooms } from './pool.js'
+import { allocateRooms, assertSeatsFree } from './pool.js'
+import { recoverPendingTeardowns } from './teardown.js'
 import { MatchMachine } from './match/machine.js'
 import type { MatchEvent } from './match/machine.js'
 import { MatchJournal } from './match/journal.js'
@@ -185,8 +186,10 @@ function historyRecordFor(m: MatchMachine): MatchHistoryRecord {
 
 /** 定点 teardown（D3）：dispose runners → 逐席位 releaseSeat（removeUser + removeRoom +
  *  host 侧映射清理，幂等）→ history 标记 done。逐席位 try/catch：单席失败入可查面，
- *  其余席位继续；history 留 pending，重启补拆解兜底。 */
-async function teardownMatch(m: MatchMachine): Promise<void> {
+ *  其余席位继续；history 留 pending，重启补拆解兜底。
+ *  成果审查阻塞 3：releaseSeat 必须传 settle 快照（historyRecordFor）——异步窗口内席位
+ *  可能被新对局复用，按当前映射删会误删新对局用户/房间。 */
+async function teardownMatch(m: MatchMachine, snap: MatchHistoryRecord): Promise<void> {
   for (const p of m.players) {
     const runner = runners.get(p.seatId)
     if (runner) {
@@ -196,7 +199,7 @@ async function teardownMatch(m: MatchMachine): Promise<void> {
   }
   for (const p of m.players) {
     try {
-      await arena.releaseSeat(p.seatId)
+      await arena.releaseSeat(p.seatId, { username: snap.seatUsers[p.seatId], room: snap.rooms[p.seatId] })
     } catch (err) {
       teardownFailuresList.push({ matchId: m.id, seatId: p.seatId, error: String(err instanceof Error ? err.message : err), at: Date.now() })
       console.log(`[teardown] seat ${p.seatId} of ${m.id} failed:`, String(err))
@@ -214,11 +217,18 @@ function wireMachine(m: MatchMachine): (e: MatchEvent) => void {
     try {
       if (e.type === 'settled') {
         // D3 顺序：history(pending) 先落（含映射快照）→ journal.remove → machines 释放
-        // → 异步 teardown（不阻断 settle 落账）→ history(done)
-        history.upsert(historyRecordFor(m))
+        // → 异步 teardown（不阻断 settle 落账）→ history(done)。
+        // upsert 与 remove 均为同步 fs 写且同 tick 相邻——「pending 落了、journal 未删」的
+        // 崩溃窗口不存在（成果审查非阻塞 5 的泄漏形态不成立，此注释为证）。
+        const snap = historyRecordFor(m)
+        history.upsert(snap)
         journal.remove(m.id)
         machines.delete(m.id) // 不占坑：settle 后允许再建局
-        void teardownMatch(m)
+        void teardownMatch(m, snap).catch((err) => {
+          // 成果审查非阻塞 6：markDone 的同步 fs 抛错不能成为 unhandled rejection
+          teardownFailuresList.push({ matchId: m.id, seatId: '*', error: `teardown finalize: ${String(err)}`, at: Date.now() })
+          console.log(`[teardown] finalize of ${m.id} failed:`, String(err))
+        })
       } else {
         journal.save(toRecord(m))
       }
@@ -260,6 +270,12 @@ const services: ArenaHttpServices = {
   matches: () => [...machines.values()],
   match: (id) => machines.get(id),
   createMatch: (input) => {
+    // 成果审查阻塞 3：跨对局 seatId 守卫（pool.ts 纯函数）——活跃对局占用的 seatId 拒绝
+    // 复用（allocateRooms 只看房间占池，看不出版位易主）。
+    assertSeatsFree(
+      [...machines.values()].flatMap((x) => x.players.map((p) => p.seatId)),
+      input.players.map((p) => p.seatId),
+    )
     // M3/D4：守卫从「无活跃对局」改为「池可容纳」（allocation 纯函数在 pool.ts，
     // roomsSnapshot 是唯一在占事实源——含 journal 恢复局房间）。
     const m = new MatchMachine({
@@ -361,27 +377,16 @@ driver.start()
 void svc
   .ensureRunning()
   .then(async ({ baseUrl }) => {
-    const pend = history.pending()
-    for (const rec of pend) {
-      for (const [seatId, username] of Object.entries(rec.seatUsers)) {
-        try {
-          await svc.system('removeUser', username)
-        } catch (err) {
-          teardownFailuresList.push({ matchId: rec.id, seatId, error: `recover removeUser: ${String(err)}`, at: Date.now() })
-          console.log(`[teardown] recover ${rec.id}/${seatId} removeUser failed:`, String(err))
-        }
-      }
-      for (const [seatId, room] of Object.entries(rec.rooms)) {
-        try {
-          await svc.system('removeRoom', room)
-        } catch (err) {
-          teardownFailuresList.push({ matchId: rec.id, seatId, error: `recover removeRoom: ${String(err)}`, at: Date.now() })
-          console.log(`[teardown] recover ${rec.id}/${seatId} removeRoom failed:`, String(err))
-        }
-      }
-      history.markDone(rec.id)
-    }
-    if (pend.length > 0) console.log(`[main] teardown-recovered=${pend.length} (history pending replayed)`)
+    const recovered = await recoverPendingTeardowns({
+      system: (cmd, value) => svc.system(cmd, value),
+      pending: history.pending(),
+      markDone: (id) => history.markDone(id),
+      onFail: (matchId, seatId, error) => {
+        teardownFailuresList.push({ matchId, seatId, error, at: Date.now() })
+        console.log(`[teardown] recover ${matchId}/${seatId} failed:`, error)
+      },
+    })
+    if (recovered > 0) console.log(`[main] teardown-recovered=${recovered} (history pending replayed)`)
     console.log(`[main] screeps server ready at ${baseUrl}`)
   })
   .catch((err) => {
