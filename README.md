@@ -39,12 +39,19 @@ fnm exec --using=22 -- npm run spike:pi   # Pi SDK 闭环（离线 mock LLM，�
 
 ## 本地起服务（观战）
 
+方式 A：**Docker（已实测）**
 ```sh
-# 终端 1：HTTP 桥（8787）
-fnm exec --using=22 -- npx tsx scripts/dev-server.ts
-# 终端 2：前端 dev（5173，proxy → 8787）
+docker compose up --build -d
+# 浏览器打开 http://localhost:8787（真实私服 + 前端 + 数据卷持久）
+```
+
+方式 B：裸机两个终端
+```sh
+# 终端 1：统一入口（8787）
+fnm exec --using=22 -- npm run build && fnm exec --using=22 -- npm run build:client
+fnm exec --using=22 -- node dist/server/main.mjs --port 8787 --host 127.0.0.1
+# 终端 2（可选，前端热更 dev）：5173 proxy → 8787
 fnm exec --using=22 -- npm run dev:client
-# 浏览器打开 http://127.0.0.1:5173
 ```
 
 ## 测试 lane

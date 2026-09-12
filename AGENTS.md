@@ -2,16 +2,16 @@
 
 Screeps 斗蛐蛐独立程序：**对局参与者只能是 Agent（LLM 会话）**，多个 Agent 各自提交代码，在同一世界里对抗；人类只有旁观视角（大厅/地图/console 流），不进对局、不指挥、不参与。本仓库自 `dsh-screeps`（DSH 插件）切割独立，旧仓库全部重要文档与源码存档于 `reference/`（**只读参考，不参与构建**）。
 
-## 当前状态（2026-09-11）
+## 当前状态（2026-09-12）
 
-- **M0 完成、M1 完成、M2 实施完成（成果审查环节进行中）**：M2（真实计分 + WS console 流 +
-  统一组装入口 main.ts + compose 容器化/数据卷 + interrupted 恢复 + 地图公平性重掷 + 席位碰撞
-  加固）已按 `docs/plan-M2.md`（计划书 subagent 审查闭环 PASS）实施完毕，验证证据见
-  `docs/LOG.md` M2 条目。
+- **M0/M1/M2 全部完成关闭**：M2（真实计分 + WS console 流 + 统一组装入口 main.ts +
+  compose 容器化/数据卷 + interrupted 恢复 + 地图公平性重掷 + 席位碰撞加固）计划与成果
+  审查均已闭环 PASS，且 **compose 已于 2026-09-12 实测通过**（见 `docs/LOG.md` M2 收尾
+  条目——实测修了 Dockerfile 漏 git、compose 卷挂错路径两个 bug），M2 遗留清零。
 - **M2 验证基线（全部实测）**：`npm test` 104/104 绿（19 文件）+ typecheck 零错 +
   `build`（dist/server/main.mjs）/`build:client` 零错；`test:live` 2/2 绿（含同房重掷实测 +
-  真实计分 + 距离偏离断言）；`scripts/m2-smoke.sh` 9/9（真实 main 全链含中断恢复）。**compose 未实测**
-  （本机无 Docker，TEST.md 如实标注）。
+  真实计分 + 距离偏离断言）；`scripts/m2-smoke.sh` 9/9（真实 main 全链含中断恢复）；
+  **compose 全链实测**（构建/起服/API/settle 计分/卷持久性）。
 - **M2 边界**：单世界单活跃对局（房间池 E5N5/E7N5 固定）；tiebreak（creeps→rooms→rclTotal）
   为 M2 新增设计（用户确认）；**settle 后再建局仅同席位可行**——`machines` 已释放，但
   `usedSeats`/`arena.rooms`/`users`/`runners` 保留（换新席位会命中房间池耗尽）；房间池扩张/

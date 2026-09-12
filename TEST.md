@@ -23,14 +23,23 @@ fnm exec --using=22 -- node dist/server/main.mjs --port 8787 --host 127.0.0.1
 journal 无残留/中断局重启恢复 journal-restored=1/相位还原。中断恢复复现法：
 对局进行中 kill 进程 → 重启 → 日志 journal-restored=1。）
 
-## 0.6 M2 compose 容器化（**未实测：本机无 Docker**）
+## 0.6 M2 compose 容器化（**已实测 2026-09-12**）
 
 ```sh
-docker compose up --build   # 构建含私服安装，首次 ≈10 分钟
-# 预期：http://localhost:8787 可用；docker compose restart 后世界库仍在（screeps-data 卷）
+docker compose up --build -d   # 构建含私服安装，首次 ≈5 分钟
+# 预期：http://localhost:8787 可用；docker compose down && docker compose up 后世界库仍在（卷持久）
 ```
-（未实测——本环境无 docker。Dockerfile/compose.yml 已静态核对；app 容器内链路与
-main.mjs 冒烟同构，风险主要在 native 编译与端口映射。）
+
+实测记录（2026-09-12，Docker 29.7.2 + Compose v5.4.0）：
+- 构建→起服→真实私服 ready（`[main] screeps server ready`）→ `/api/matches`/`/api/world` 正常；
+  容器内 create→settle 真实计分（manual settle → scores 注入）通过。
+- **持久性实测**：`docker compose down`（保卷）再 `up` —— 启动日志 0 次 reseed/reinstall，
+  卷内 db.json 存在且被 storage 正常改写，世界读回正常；settled 对局 journal 无残留
+  （journal-restored=0，与 m2-smoke 一致）。
+- 实测中修了 2 个只有真 Docker 才能暴露的 bug：① Dockerfile 漏装 `git`
+  （checkToolchain 四件套要求）→ `--install-only` 阶段 toolchain-missing 构建失败；
+  ② compose 卷挂错路径——世界库实为 `server/db.json` 文件，原挂 `server/db/` 子目录
+  从未被写 → 改挂整个 `server/` 目录（named volume 首挂自动从镜像拷入）。
 
 ## 1. 启动（两个终端）
 
@@ -94,7 +103,7 @@ sh scripts/m2-smoke.sh                     # M2 main.mjs 全链冒烟（9/9，�
 
 ## 4. 已知遗留
 
-- **compose 容器化未实测**（本机无 Docker；TEST.md §0.6 手测项待 Docker 环境）。
+- ~~compose 容器化未实测~~ → **已实测通过（2026-09-12，见 §0.6）**，M2 遗留清零。
 - 真实计分 / WS console 流 / interrupted 恢复 / 地图公平性重掷已在 M2 落地（test:live +
   m2-smoke 实测）；端到端一局真实对局（双 Agent 真跑代码分出胜负）的浏览器完整验收，
   建议 M3 首个周期做一次实拍。

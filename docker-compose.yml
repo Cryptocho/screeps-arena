@@ -1,6 +1,8 @@
 # M2/S3+S4：单 app 服务容器 + 两卷（拓扑拍板见 plan-M2 §2 S3——无独立 screeps 服务定义：
 # ScreepsService 仅 managed 模式，跨容器拆分归 M3+ 评估）。
-# 卷只挂可变数据：server/db（世界库，镜像内已播种首启拷入）+ journal（对局恢复）。
+# 卷挂 server/ 整目录（世界库 db.json 在 serverDir 根，不在 db/ 子目录——实测订正）：
+# named volume 首次挂载自动从镜像拷入（含安装产物 node_modules + 播种 db.json），不受遮蔽影响。
+# journal（对局恢复）单独一卷。
 services:
   app:
     build: .
@@ -11,7 +13,7 @@ services:
       # 在位时挂真实 LLM 唤醒；缺席 = 只推进时钟的观战形态
       - OPENROUTER_API_KEY
     volumes:
-      - screeps-data:/app/.arena-data/server/db
+      - screeps-data:/app/.arena-data/server
       - arena-data:/app/.arena-data/journal
 
 volumes:

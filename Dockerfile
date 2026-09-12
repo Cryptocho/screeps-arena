@@ -6,7 +6,7 @@ WORKDIR /app
 
 # native 模块编译工具链（screeps server 依赖）
 RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 make g++ ca-certificates \
+ && apt-get install -y --no-install-recommends python3 make g++ git ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./

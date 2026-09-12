@@ -1,5 +1,27 @@
 # 工程日志（倒序）
 
+## 2026-09-12 M2 收尾：compose 实测通过（修 2 bug）——M2 关闭
+
+Docker 环境到位后实测 compose（Docker 29.7.2 + Compose v5.4.0），**当场抓到 2 个只有
+真 Docker 才能暴露的 bug**（静态核对全部漏掉）：
+
+| # | 问题 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | 构建期 `--install-only` 失败 `toolchain-missing` | Dockerfile 装了 python3/make/g++ 但漏 `git`，checkToolchain 四件套要求 git | Dockerfile apt 追加 git |
+| 2 | **世界库根本没进卷**：`screeps-data` 挂在 `server/db/`（从未被写的子目录），而世界库实为 `server/db.json` 文件——`down/up` 会丢世界 | compose 挂载路径与实际落盘路径不符 | 卷改挂整个 `server/`（named volume 首挂自动从镜像拷入 node_modules + 播种 db.json，不受遮蔽影响） |
+
+**验证（全部实测）**：
+- 构建→起服：镜像构建零错，容器内真实私服 ready（`screeps server ready` + native addon 校验），
+  `--host 0.0.0.0` 映射 8787 正常。
+- 容器内 API 全链：create match → manual settle 真实计分（scores 注入，winner=draw）→
+  settled journal 无残留（journal-restored=0，与 m2-smoke 一致）。
+- **持久性**：`docker compose down`（保卷）再 `up` —— 启动日志 **0 次** reseed/reinstall
+  （全部复用卷内容），卷内 db.json 存在且被 storage 正常改写（md5 演进 = 状态落卷），
+  `/api/world` 读回正常（Invader 等系统用户在）。
+- 代码零改动，离线回归 `npm test` **104/104 绿**（19 文件）。
+
+TEST.md §0.6 改为已实测、§4 遗留清零。**M2 至此正式关闭**（此前唯一未实测项消除）。
+
 ## 2026-09-11 M2 成果审查一轮：FAIL 3 阻塞 → 修复（待复审）
 
 **一审结论**：FAIL——① main.ts `createMatch` 缺 `driver.watch` + waker（真实新局驱动链断裂，
