@@ -218,8 +218,9 @@ function wireMachine(m: MatchMachine): (e: MatchEvent) => void {
       if (e.type === 'settled') {
         // D3 顺序：history(pending) 先落（含映射快照）→ journal.remove → machines 释放
         // → 异步 teardown（不阻断 settle 落账）→ history(done)。
-        // upsert 与 remove 均为同步 fs 写且同 tick 相邻——「pending 落了、journal 未删」的
-        // 崩溃窗口不存在（成果审查非阻塞 5 的泄漏形态不成立，此注释为证）。
+        // upsert 与 remove 为同一同步块相邻的两次同步 fs 写——「pending 落了、journal
+        // 未删」的窗口仅微秒级（kill -9 恰落在两写之间的概率极小）；该窗口下恢复局房间
+        // 会经 markRoomsPrepared 灌回且不释放，接受为已知边界（M3 复审非阻塞 2）。
         const snap = historyRecordFor(m)
         history.upsert(snap)
         journal.remove(m.id)

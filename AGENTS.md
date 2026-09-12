@@ -9,10 +9,12 @@ Screeps 斗蛐蛐独立程序：**对局参与者只能是 Agent（LLM 会话）
   房间池可配置（`--rooms`/`ARENA_ROOMS`）、多活跃对局（池可容纳即可建局）、对局历史
   （`GET /api/history` + 大厅历史表）。M2 的「settle 后仅同席位可再建局」「房间池固定」
   「单活跃对局」三条边界已全部消除。验证证据见 `docs/LOG.md` M3 条目。
-- **M3 验证基线（全部实测）**：`npm test` **122/122 绿**（21 文件）+ typecheck 零错 +
+- **M3 验证基线（全部实测）**：`npm test` **124/124 绿**（22 文件）+ typecheck 零错 +
   `build`/`build:client` 零错；S0 拆解探针（`scripts/s0-removal-probe.ts`）真实私服全绿；
-  `scripts/m2-smoke.sh` M3 后 **13 步**全绿（teardown done / 换席位再建局 /
-  teardown-recovered=1 / journal 恢复）；compose 重建后全链（create→settle→history→再建局）。
+  `test:live` **4/4 绿**（M3 增补拆解闭环/相邻房/崩溃恢复）；`scripts/m2-smoke.sh` M3 后
+  **13 步**全绿（teardown done / 换席位再建局 / teardown-recovered=1 / journal 恢复）；
+  compose 重建后全链（create→settle→history→再建局）。成果审查闭环 PASS（2026-09-13，
+  一审 FAIL 3 阻塞 → 修复 → 复审 PASS 余 4 非阻塞已落实/记录）。
 - **M2 遗留能力**（仍有效）：真实计分（tiebreak creeps→rooms→rclTotal）、WS console 流、
   interrupted 恢复、地图公平性重掷、seatSlug 碰撞加固、compose 容器化+数据卷。
 - **M3 边界**：单世界多局共用同一世界（锦标赛形态建议多世界，M4 评估跨容器拆分）；

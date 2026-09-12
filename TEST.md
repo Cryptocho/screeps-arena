@@ -105,7 +105,7 @@ WS 订阅增量（M2，2s 轮询已删）；**样式仍未做**（全部功能�
 ## 3. 自动化 lane（已实测，供回归）
 
 ```sh
-fnm exec --using=22 -- npm test           # 122/122 绿（21 文件，离线 mock，零成本，M3 含 pool/history/mod 拆解打表）
+fnm exec --using=22 -- npm test           # 124/124 绿（22 文件，离线 mock，零成本，M3 含 pool/history/mod 拆解/双局并存打表）
 fnm exec --using=22 -- npm run typecheck  # 零错
 fnm exec --using=22 -- npm run build && fnm exec --using=22 -- npm run build:client  # 服务端 main.mjs + vite 前端零错
 fnm exec --using=22 -- npm run test:live  # 真实私服 IT（首次安装 ≈6 分钟；M3 增补后 4/4 绿，含拆解闭环+相邻房+崩溃恢复）
