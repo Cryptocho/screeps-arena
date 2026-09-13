@@ -6,7 +6,8 @@
  * CLI：node dist/server/main.mjs [--port N] [--host H] [--data-dir D] [--static-dir P]
  *      [--agent-dir P] [--model M] [--rooms E5N5,E7N5,…]
  * 环境变量：OPENROUTER_API_KEY（在位时挂真实 LLM 唤醒，缺席 = 只推进时钟的观战形态）；
- *          ARENA_ROOMS（房间池覆盖）；SMOKE_BASE_URL（provider 覆盖）；ARENA_MOD_PATH（mod 路径覆盖）。
+ *          ARENA_ROOMS（房间池覆盖）；SMOKE_BASE_URL（provider 覆盖）；ARENA_MOD_PATH（mod 路径覆盖）；
+ *          ARENA_MODEL（模型覆盖，compose 形态——CMD 不便传 CLI 参数）。
  *
  * 数据布局（--data-dir，默认 <cwd>/.arena-data）：
  *   server/            = 私服 serverDir（compose 挂卷 screeps-data）
@@ -35,10 +36,13 @@ import { allocateRooms, assertSeatsFree } from './pool.js'
 import { recoverPendingTeardowns } from './teardown.js'
 import { MatchMachine } from './match/machine.js'
 import type { MatchEvent } from './match/machine.js'
+import type { MatchConfig } from './match/model.js'
 import { MatchJournal } from './match/journal.js'
 import type { MatchJournalRecord } from './match/journal.js'
 import { MatchHistory } from './history.js'
 import type { MatchHistoryRecord } from './history.js'
+import { TournamentStore } from './tournament/store.js'
+import { TournamentScheduler, initialPromptText } from './tournament/scheduler.js'
 import { computeOutcome } from './match/score.js'
 import type { SeatScoreInput } from './match/score.js'
 import { AgentRunner } from '../agent/runner.js'
@@ -52,7 +56,7 @@ const args = parseArgs({
     'data-dir': { type: 'string' },
     'static-dir': { type: 'string' },
     'agent-dir': { type: 'string' },
-    model: { type: 'string', default: 'xiaomi/mimo-v2.5' },
+    model: { type: 'string' }, // 默认值交由 ARENA_MODEL 环境变量供给（compose 形态）；都有值时 CLI 优先
     // M3/D6 房间池（缺省 E5N5,E7N5）；池大小 = 并发席位上限
     rooms: { type: 'string' },
     // 镜像构建期私服安装口（Dockerfile RUN 段）：走 ensureRunning 链装完即停，不挂 HTTP
@@ -63,7 +67,7 @@ const args = parseArgs({
 const PORT = Number(args.port)
 const HOST = args.host
 const KEY = process.env.OPENROUTER_API_KEY
-const MODEL = args.model
+const MODEL = args.model ?? process.env.ARENA_MODEL ?? 'xiaomi/mimo-v2.5'
 const MODEL_BASE = process.env.SMOKE_BASE_URL ?? 'https://openrouter.ai/api/v1'
 const dataDir = args['data-dir'] ?? path.join(process.cwd(), '.arena-data')
 const agentDir = args['agent-dir'] ?? path.join(dataDir, 'agents')
@@ -230,6 +234,9 @@ function wireMachine(m: MatchMachine): (e: MatchEvent) => void {
           teardownFailuresList.push({ matchId: m.id, seatId: '*', error: `teardown finalize: ${String(err)}`, at: Date.now() })
           console.log(`[teardown] finalize of ${m.id} failed:`, String(err))
         })
+        // M4/D3-②：锦标赛结果同步回填（applyResult 同步落账）+ 异步 pump 排下一场。
+        // 挂点在 void teardownMatch 派发语句之后（plan-M4 v2 N1：不依赖 dispose 隐式顺序）。
+        scheduler.onSettled(m)
       } else {
         journal.save(toRecord(m))
       }
@@ -247,7 +254,7 @@ async function wakerFor(seatId: string): Promise<SeatWaker> {
     if (!provider) throw new Error('no provider configured (OPENROUTER_API_KEY missing)')
     runner = await AgentRunner.create({
       seatId,
-      tools: buildSeatTools({ registry: arena, backend: arena }, seatId),
+      tools: buildSeatTools({ registry: arena, backend: seatBackendFor(seatId) }, seatId),
       provider,
       baseDir: agentDir,
       onEvent: (e) => {
@@ -262,41 +269,128 @@ async function wakerFor(seatId: string): Promise<SeatWaker> {
 
 const machines = new Map<string, MatchMachine>()
 
-/** 惰性 waker（首唤醒时建号 + 建 AgentRunner）；无 provider 时不产生 waker（只推进时钟）。 */
+/** 建局唯一正道（M4/D5：HTTP 与锦标赛调度器共用同一函数，非自调 HTTP）。 */
+function createMatchInternal(input: {
+  config?: Partial<MatchConfig>
+  players: Array<{ seatId: string; username: string }>
+}): MatchMachine {
+  // 成果审查阻塞 3：跨对局 seatId 守卫（pool.ts 纯函数）——活跃对局占用的 seatId 拒绝
+  // 复用（allocateRooms 只看房间占池，看不出版位易主）。
+  assertSeatsFree(
+    [...machines.values()].flatMap((x) => x.players.map((p) => p.seatId)),
+    input.players.map((p) => p.seatId),
+  )
+  // M3/D4：守卫从「无活跃对局」改为「池可容纳」（allocation 纯函数在 pool.ts，
+  // roomsSnapshot 是唯一在占事实源——含 journal 恢复局房间）。
+  const m = new MatchMachine({
+    players: input.players,
+    ...(input.config ? { config: input.config } : {}),
+    onEvent: (e) => wireMachine(m)(e),
+  })
+  for (const [seatId, room] of Object.entries(allocateRooms(ROOM_POOL, arena.roomsSnapshot(), input.players.map((p) => p.seatId)))) {
+    arena.assignRoom(seatId, room)
+  }
+  machines.set(m.id, m)
+  // 驱动链接线（M1 复审问题 3 教训；成果审查阻塞 1）：createMatch 必须 watch，
+  // 否则 tick 恒 no-op、Agent 永不唤醒——与 dev-services 同一铁律
+  const wakers: Record<string, SeatWaker> = {}
+  if (provider) for (const p of input.players) wakers[p.seatId] = lazyWaker(p.seatId)
+  driver.watch(m, wakers)
+  // 房间生成 + 公平性校验重掷后台预热（建号/首唤醒前完成；幂等 + 并发安全）
+  void arena.prepareRooms().catch((err) => console.log('[arena] prepareRooms failed:', String(err)))
+  return m
+}
+
+/* ---------------- M4 锦标赛编排（plan-M4/S3，D3/D5） ---------------- */
+
+const tournamentStore = new TournamentStore(path.join(dataDir, 'tournaments'))
+
+const scheduler = new TournamentScheduler({
+  store: tournamentStore,
+  createMatch: (players, config) => createMatchInternal({ players, ...(config ? { config } : {}) }),
+  getMachine: (id) => machines.get(id),
+  journalEntries: () => journal.list().map((r) => ({ id: r.id, players: r.players.map((p) => p.seatId) })),
+  historyGet: (id) => {
+    const rec = history.list().find((h) => h.id === id)
+    return rec ? { winner: rec.winner, scores: rec.scores, settledAt: rec.settledAt } : undefined
+  },
+  historyFindByPair: (pair) => {
+    const want = [...pair].sort()
+    const rec = history
+      .list()
+      .find((h) => {
+        const seats = Object.keys(h.seatUsers).sort()
+        return seats.length === 2 && seats[0] === want[0] && seats[1] === want[1]
+      })
+    return rec ? { id: rec.id, winner: rec.winner, scores: rec.scores, settledAt: rec.settledAt } : undefined
+  },
+  initialPrompt: (seatId, matchId) =>
+    // 返回在途 Promise：scheduler 据此去重补发（在途不重发、不耗配额）
+    (async () => {
+      const w = await wakerFor(seatId)
+      await w.prompt(seatId, initialPromptText(matchId))
+    })().catch((err) => console.log(`[tournament] initial prompt ${seatId}/${matchId} failed:`, String(err))),
+  log: (msg) => console.log(`[tournament] ${msg}`),
+})
+
+/** 席位后端：arena 之上补一跳 machine 登记（submit_code 的三工具落点，machine.ts 语义）。
+ *  compose 全链实测发现：此前 submit 只上传私服，p.code 恒空 → starter 全员就绪门槛
+ *  永不可达、锦标赛对局永不开局。席位同时只属一个活跃对局（createMatchInternal 守卫）。 */
+function seatBackendFor(seatId: string) {
+  return {
+    submitCode: async (user: string, modules: Record<string, string>) => {
+      const result = await arena.submitCode(user, modules)
+      if (result.ok) {
+        const m = [...machines.values()].find(
+          (x) => x.players.some((p) => p.seatId === seatId) && (x.phase === 'creating' || x.phase === 'roundBreak'),
+        )
+        if (m) {
+          try {
+            m.submitCode(seatId, modules)
+          } catch (err) {
+            console.log(`[${seatId}] machine code register failed:`, String(err))
+          }
+        }
+      }
+      return result
+    },
+    runConsole: (user: string, expression: string) => arena.runConsole(user, expression),
+    report: (user: string) => arena.report(user),
+  }
+}
+
+const wakerCreating = new Map<string, Promise<SeatWaker>>()
+
+/** 惰性 waker（首唤醒时建号 + 建 AgentRunner）；无 provider 时不产生 waker（只推进时钟）。
+ *  单飞：初始 prompt 的 starter 补发（5s 周期）与首发会并发进入——不收口则建号重复
+ *  执行（mod 侧 createUser 报 already exists，整轮唤醒失败）。 */
 function lazyWaker(seatId: string): SeatWaker {
-  return { prompt: async (sid, text) => (await wakerFor(sid)).prompt(sid, text) }
+  return {
+    prompt: (_sid, text) => {
+      let p = wakerCreating.get(seatId)
+      if (!p) {
+        p = wakerFor(seatId)
+        wakerCreating.set(seatId, p)
+        void p.catch(() => {
+          if (wakerCreating.get(seatId) === p) wakerCreating.delete(seatId) // 失败可重试
+        })
+      }
+      return p.then((w) => w.prompt(seatId, text))
+    },
+  }
 }
 
 const services: ArenaHttpServices = {
   matches: () => [...machines.values()],
   match: (id) => machines.get(id),
-  createMatch: (input) => {
-    // 成果审查阻塞 3：跨对局 seatId 守卫（pool.ts 纯函数）——活跃对局占用的 seatId 拒绝
-    // 复用（allocateRooms 只看房间占池，看不出版位易主）。
-    assertSeatsFree(
-      [...machines.values()].flatMap((x) => x.players.map((p) => p.seatId)),
-      input.players.map((p) => p.seatId),
-    )
-    // M3/D4：守卫从「无活跃对局」改为「池可容纳」（allocation 纯函数在 pool.ts，
-    // roomsSnapshot 是唯一在占事实源——含 journal 恢复局房间）。
-    const m = new MatchMachine({
-      players: input.players,
-      ...(input.config ? { config: input.config } : {}),
-      onEvent: (e) => wireMachine(m)(e),
-    })
-    for (const [seatId, room] of Object.entries(allocateRooms(ROOM_POOL, arena.roomsSnapshot(), input.players.map((p) => p.seatId)))) {
-      arena.assignRoom(seatId, room)
-    }
-    machines.set(m.id, m)
-    // 驱动链接线（M1 复审问题 3 教训；成果审查阻塞 1）：createMatch 必须 watch，
-    // 否则 tick 恒 no-op、Agent 永不唤醒——与 dev-services 同一铁律
-    const wakers: Record<string, SeatWaker> = {}
-    if (provider) for (const p of input.players) wakers[p.seatId] = lazyWaker(p.seatId)
-    driver.watch(m, wakers)
-    // 房间生成 + 公平性校验重掷后台预热（建号/首唤醒前完成；幂等 + 并发安全）
-    void arena.prepareRooms().catch((err) => console.log('[arena] prepareRooms failed:', String(err)))
-    return m
+  createMatch: (input) => createMatchInternal(input),
+  createTournament: (input) => {
+    // D6：无 provider（观战形态）拒建——无唤醒的锦标赛永不完成且无提示
+    if (!provider) throw new Error('tournament requires a provider (OPENROUTER_API_KEY missing)')
+    return scheduler.create(input)
   },
+  tournaments: () => tournamentStore.list(),
+  tournament: (id) => tournamentStore.get(id),
   getWorld: () => svc.getWorld(),
   getTerrain: (rooms) => svc.getTerrain(rooms),
   // 观战 console 口（成果审查阻塞 2）：入参统一为 seatId，host 侧解析真实用户名——
@@ -327,7 +421,7 @@ function restoreFromJournal(): number {
       arena.restoreUser(seatId, username)
     }
     for (const p of rec.players) {
-      if (provider) wakers[p.seatId] = { prompt: async (sid, text) => (await wakerFor(sid)).prompt(sid, text) }
+      if (provider) wakers[p.seatId] = lazyWaker(p.seatId)
     }
     const m = MatchMachine.restore({
       id: rec.id,
@@ -371,6 +465,9 @@ const handle = await startHttpServer({
 broadcast = (e) => handle.broadcast(e)
 
 const restored = restoreFromJournal()
+// M4/D3-③：锦标赛启动恢复（三态判定 + scheduled pair 采纳）+ starter/pump 定时器
+const tournamentsRecovered = scheduler.recoverOnStartup()
+scheduler.startTimers()
 driver.start()
 // 启动即拉起私服（观战形态世界常跑；不阻塞 HTTP 起服，但失败 = 主功能不可用，fail fast）。
 // 私服就绪后先补拆解 history 中 teardown:pending 的残留（D3：崩溃于 pending 窗口 →
@@ -395,11 +492,12 @@ void svc
     process.exit(1)
   })
 console.log(
-  `[main] http://${HOST}:${handle.port} data=${dataDir} (real world; wake=${provider ? `real ${MODEL}` : 'disabled'}; journal-restored=${restored})`,
+  `[main] http://${HOST}:${handle.port} data=${dataDir} (real world; wake=${provider ? `real ${MODEL}` : 'disabled'}; journal-restored=${restored}; tournaments-recovered=${tournamentsRecovered})`,
 )
 
 process.on('SIGINT', async () => {
   driver.stop()
+  scheduler.stopTimers()
   for (const r of runners.values()) r.dispose()
   await handle.close()
   process.exit(0)

@@ -1,5 +1,50 @@
 # 工程日志（倒序）
 
+## 2026-09-13 M4 锦标赛编排：实施 + 全链实测 + 5 bug 修复（成果审查待做）
+
+**实施（plan-M4 v3 S0–S6）**：`src/server/tournament/`（types/bracket/store/scheduler）+
+main.ts 编排接线（createMatchInternal 抽取共享、wireMachine settled→scheduler.onSettled、
+启动恢复 + 定时器、SIGINT 清理）+ HTTP 3 路由（server/routes 双注册）+ 前端锦标赛表
+（5s 轮询 + 积分榜 + errors 显示）。测试 5 文件 33 用例（bracket 12/store 5/scheduler 10/
+flow IT 3/fairness 负向 3：模块导入面无 src/agent/*、buildSeatTools 计数=1、初始 prompt
+无跨局信息）。
+
+**验证基线（全部本机实测）**：`npm test` **157/157 绿**（27 文件）+ typecheck 零错 +
+build/build:client 零错；`test:live` **7/7 绿**（M4 增补 restart 竞态回归 11.4s + 锦标赛
+真实私服链 12.1s + kill-9 三真 402s）；m2-smoke **13 步全绿**；**compose 锦标赛全链**
+（`scripts/mock-llm.ts` 独立 mock OpenAI server + `SMOKE_BASE_URL`/`ARENA_MODEL` 注入：
+建届→自动建局→双席初始 prompt→submit_code→starter 自动开局→manual settle→届终回填→
+积分榜，**errors=[]**；`down`（保卷）→`up`：锦标赛状态/history 完整保留）。
+
+**本轮修复的关键 bug**（按发现顺序）：
+1. **`ScreepsService.restart()` 竞态**（kill-9 IT 三连败取证 → 根因链见上轮条目）：stop
+   窗口内 `server=undefined` 而 status 仍 'running'，并发 ensureRunning 穿透 guard 各自
+   ensure() → 双/三重私服互踩 db.json 丢房（E7N5 实丢；探针无并发时 0/3 复现）。修复
+   （service.ts）：restart 单飞（restartPromise）+ stop 先置 status='stopped' + 把
+   stop→ensure→resume 核心作为 barrier 塞进 ensurePromise（并发调用与重启共享同一周期）
+   + 删除对在途 ensure 的无条件清空（会 clobber 半拉起的世界）+ shutdown 等待在途
+   restart。**回归钉死**：live IT「restart 窗口并发轮询 → 恰好一次 'server ready' +
+   生成房 E15N5 不丢」。
+2. **Agent submit_code 未登记进对局机器**（compose 全链暴露）：三工具只经 arena 上传私服，
+   `p.code` 恒空 → starter 全员就绪门槛永不可达、锦标赛永不开局（此前 smoke 全是
+   「建局即 settle」，此路径从未被真实触发）。修复：`seatBackendFor(seatId)` 包装 backend，
+   上传成功后登记进该席位所在活跃对局（creating/roundBreak）。
+3. **席位 waker 并发重入**：starter 5s 补发与首发并发进入 wakerFor → 重复 bindUser →
+   mod createUser 'already exists' 整轮失败。修复：per-seat 单飞（wakerCreating 表）。
+4. **bindUser 跨重启不幂等**：世界卷持久化后同名 agent_<slug> 用户仍在世界库，createUser
+   拒绝。修复：bindUser 先查 world，用户在则收编映射不建号。
+5. **compose 持久卷缺口**：仅挂 server/journal，history/tournaments/agents 在容器层
+   （重建即丢）。修复：补 3 卷 + `ARENA_MODEL` 环境变量（CLI default 压制 env 的坑：
+   commander default 移除改 env 兜底）+ extra_hosts host-gateway（mock 链）。
+
+**伴生修订**：scheduler 初始 prompt 配额语义——在途 prompt 未收口前补发跳过且不计数
+（首轮唤醒含建号+房间生成+restart，常超 5s starter 周期，旧语义 15s 即耗尽 3 次配额、
+errors 误报；实测 errors=[] 后定稿）。compose 全链教训：持久卷会跨迭代残留旧锦标赛/
+用户，验证必须 `down -v` 清卷做干净轮（残留旧届恢复后占席 → SeatInUseError 干扰判读）。
+
+**遗留**：带真实 LLM 的锦标赛全程浏览器验收（需用户 key，TEST.md §0.8 已给命令并标注
+未实测）；成果审查循环待做（下一步）。
+
 ## 2026-09-13 M3 成果复审：PASS——M3 关闭
 
 **复审**（同审查员独立复审，范围 34f420f..8346d7f，独立复跑 124/124 属实）：**PASS**。

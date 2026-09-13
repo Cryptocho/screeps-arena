@@ -189,6 +189,18 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
     const r = await routeHandler({ method: 'GET', url: req.url })
     return reply.code(r.status).send(r.json)
   })
+  app.get('/api/tournaments', async (req, reply) => {
+    const r = await routeHandler({ method: 'GET', url: req.url })
+    return reply.code(r.status).send(r.json)
+  })
+  app.post('/api/tournaments', async (req, reply) => {
+    const r = await routeHandler({ method: 'POST', url: req.url, body: req.body })
+    return reply.code(r.status).send(r.json)
+  })
+  app.get('/api/tournaments/:id', async (req, reply) => {
+    const r = await routeHandler({ method: 'GET', url: req.url })
+    return reply.code(r.status).send(r.json)
+  })
 
   if (opts.staticDir) {
     await app.register(fastifyStatic, { root: opts.staticDir, prefix: '/' })

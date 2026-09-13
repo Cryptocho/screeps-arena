@@ -1,8 +1,10 @@
-# M2/S3+S4：单 app 服务容器 + 两卷（拓扑拍板见 plan-M2 §2 S3——无独立 screeps 服务定义：
-# ScreepsService 仅 managed 模式，跨容器拆分归 M3+ 评估）。
+# M2/S3+S4：单 app 服务容器（拓扑拍板见 plan-M2 §2 S3——无独立 screeps 服务定义：
+# ScreepsService 仅 managed 模式，跨容器拆分归 M3+/M4 评估）。
 # 卷挂 server/ 整目录（世界库 db.json 在 serverDir 根，不在 db/ 子目录——实测订正）：
 # named volume 首次挂载自动从镜像拷入（含安装产物 node_modules + 播种 db.json），不受遮蔽影响。
-# journal（对局恢复）单独一卷。
+# M3/M4 订正：持久面共 5 处——server/（世界库）、journal/（对局恢复）、history/（对局历史
+# + teardown pending 补拆解载体）、tournaments/（锦标赛状态）、agents/（席位工作区，
+# 超时兜底语义依赖跨局保留）。缺一则在容器重建时丢失（M4 compose 实测发现并修复）。
 services:
   app:
     build: .
@@ -12,10 +14,22 @@ services:
     environment:
       # 在位时挂真实 LLM 唤醒；缺席 = 只推进时钟的观战形态
       - OPENROUTER_API_KEY
+      # SMOKE_BASE_URL：provider 指向自建 OpenAI 兼容端点（mock 链验证用，scripts/mock-llm.ts）
+      - SMOKE_BASE_URL
+      - ARENA_MODEL
+    extra_hosts:
+      # SMOKE_BASE_URL 指向宿主 mock 时需要（linux 上 host.docker.internal 非默认）
+      - 'host.docker.internal:host-gateway'
     volumes:
       - screeps-data:/app/.arena-data/server
       - arena-data:/app/.arena-data/journal
+      - arena-history:/app/.arena-data/history
+      - arena-tournaments:/app/.arena-data/tournaments
+      - arena-agents:/app/.arena-data/agents
 
 volumes:
   screeps-data:
   arena-data:
+  arena-history:
+  arena-tournaments:
+  arena-agents:

@@ -11,6 +11,8 @@ import type { MatchEvent } from '../match/machine.js'
 import type { MatchConfig } from '../match/model.js'
 import { computeOutcome } from '../match/score.js'
 import type { SeatScoreInput } from '../match/score.js'
+import { standings } from '../tournament/bracket.js'
+import type { Tournament, TournamentParticipant } from '../tournament/types.js'
 
 /** 桥需要的服务面（结构化最小接口）。 */
 export interface ArenaHttpServices {
@@ -37,6 +39,10 @@ export interface ArenaHttpServices {
   }>
   /** teardown 失败可查面（M3/D3；settle 后 machine 已删，errors 通道不可达）。 */
   teardownFailures?(): Array<{ matchId: string; seatId: string; error: string; at: number }>
+  /** 锦标赛编排（M4/D6；可选——dev/mock lane 无需实现）。业务规则错误 throw → 400。 */
+  createTournament?(input: { name?: string; participants: TournamentParticipant[]; matchConfig?: Partial<MatchConfig> }): Tournament
+  tournaments?(): Tournament[]
+  tournament?(id: string): Tournament | undefined
 }
 
 export interface ArenaRequest {
@@ -81,6 +87,11 @@ export function matchView(m: MatchMachine): unknown {
     winner: m.state.winner ?? null,
     scores: m.state.scores ?? null,
   }
+}
+
+/** 锦标赛投影（M4/D6）：全量字段 + 纯派生积分榜。 */
+export function tournamentView(t: Tournament): unknown {
+  return { ...structuredClone(t), standings: standings(t) }
 }
 
 /** 路由核心：纯函数打表。未知路由 404；方法不匹配 405；业务错误 400/409。 */
@@ -190,6 +201,43 @@ export async function handleArenaRequest(services: ArenaHttpServices, req: Arena
   if (pathname === '/api/teardown-failures') {
     if (method !== 'GET') return bad(405, `method ${method} not allowed`)
     return ok({ failures: services.teardownFailures?.() ?? [] })
+  }
+
+  if (pathname === '/api/tournaments') {
+    if (method === 'GET') return ok({ tournaments: (services.tournaments?.() ?? []).map(tournamentView) })
+    if (method === 'POST') {
+      if (!services.createTournament) return bad(400, 'tournaments not supported by this instance')
+      const body = (req.body ?? {}) as {
+        name?: string
+        participants?: TournamentParticipant[]
+        matchConfig?: Partial<MatchConfig>
+      }
+      if (!Array.isArray(body.participants)) return bad(400, 'participants required (array of {seatId, username})')
+      for (const p of body.participants) {
+        if (typeof p.seatId !== 'string' || !USERNAME_RE.test(p.seatId)) return bad(400, `invalid seatId: ${String(p.seatId)}`)
+        if (typeof p.username !== 'string' || !USERNAME_RE.test(p.username)) return bad(400, `invalid username: ${String(p.username)}`)
+      }
+      try {
+        const t = services.createTournament({
+          ...(body.name !== undefined ? { name: body.name } : {}),
+          participants: body.participants,
+          ...(body.matchConfig ? { matchConfig: body.matchConfig } : {}),
+        })
+        return { status: 201, json: tournamentView(t) }
+      } catch (err) {
+        return bad(400, String(err instanceof Error ? err.message : err))
+      }
+    }
+    return bad(405, `method ${method} not allowed`)
+  }
+
+  const tournamentPath = /^\/api\/tournaments\/([^/]+)$/.exec(pathname)
+  if (tournamentPath) {
+    if (method !== 'GET') return bad(405, `method ${method} not allowed`)
+    const id = decodeURIComponent(tournamentPath[1]!)
+    const t = services.tournament?.(id)
+    if (!t) return bad(404, `tournament ${id} not found`)
+    return ok(tournamentView(t))
   }
 
   return bad(404, `no route for ${method} ${pathname}`)

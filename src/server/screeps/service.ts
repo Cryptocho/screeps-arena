@@ -75,6 +75,7 @@ export class ScreepsService {
   private status: ScreepsServiceStatus = 'stopped'
   private statusDetail = ''
   private ensurePromise: Promise<void> | undefined
+  private restartPromise: Promise<void> | undefined
   private runtime: NodeRuntime | undefined
   private server: RunningServer | undefined
   private secret: string | undefined
@@ -310,22 +311,48 @@ export class ScreepsService {
    * 重启私服（managed 模式）。必要性（S7a spike）：runner 把地形缓存进
    * staticTerrainData（进程级），generateRoom 之后新建的房间不在缓冲区 →
    * 该房所有用户 run 抛 "Could not load terrain data"。官方无刷新钩子，必须重启。
+   *
+   * 单飞（restartPromise）：并发 restart 共享同一次重启。
+   * 竞态根因修复（2026-09-13 kill-9 IT 取证）：旧实现 stop 窗口内 server=undefined 而
+   * status 仍 'running'，并发 ensureRunning 穿透 guard 各自 ensure() → 双/三重私服
+   * 进程互踩同一 db.json，后写覆盖前写丢房间（E7N5 实丢）。修法：stop 窗口先置
+   * status='stopped'，并把整个 stop→ensure→resume 核心作为 barrier 塞进 ensurePromise
+   * ——并发 ensureRunning 与本次重启共享同一周期，不再自行拉起竞争 ensure；
+   * 也不再有对在途 ensure 的无条件清空（旧 `this.ensurePromise = undefined` 会
+   * clobber 正在进行的启动）。
    */
   async restart(options: { resume?: boolean } = {}): Promise<void> {
+    if (this.restartPromise) return this.restartPromise
+    this.restartPromise = this.doRestart(options).finally(() => {
+      this.restartPromise = undefined
+    })
+    return this.restartPromise
+  }
+
+  private async doRestart(options: { resume?: boolean }): Promise<void> {
     this.log('restarting server to refresh runner terrain cache')
+    if (this.ensurePromise) {
+      await this.ensurePromise.catch(() => {}) // 在途 ensure 先落地（不 clobber 半拉起的世界）
+    }
     const server = this.server
     this.server = undefined
-    if (server) {
-      try {
-        await server.stop()
-      } finally {
-        this.removeExitGuard()
-        this.status = 'stopped'
+    this.status = 'stopped' // 先于 stop 置位：窗口内 ensureRunning 走共享路径而非穿透
+    this.statusDetail = 'restarting'
+    const core = (async () => {
+      if (server) {
+        try {
+          await server.stop()
+        } finally {
+          this.removeExitGuard()
+        }
       }
-    }
-    this.ensurePromise = undefined
-    await this.ensureRunning()
-    if (options.resume !== false) await this.system('resume')
+      await this.ensure()
+      if (options.resume !== false) await this.system('resume') // status 已 running，走 ensureRunning 快路径，无死锁
+    })()
+    this.ensurePromise = core.catch(() => {}).finally(() => {
+      this.ensurePromise = undefined
+    })
+    await core
   }
 
   /**
@@ -334,6 +361,9 @@ export class ScreepsService {
    * 最后才注销 exit guard（stop 期间宿主退出仍有人 SIGKILL 进程组）。
    */
   async shutdown(): Promise<void> {
+    if (this.restartPromise) {
+      await this.restartPromise.catch(() => {}) // 在途 restart（含重新拉起）先完成再停
+    }
     if (this.ensurePromise) {
       await this.ensurePromise.catch(() => {})
     }

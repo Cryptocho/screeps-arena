@@ -189,6 +189,13 @@ export class RealArena implements SeatRegistry, ArenaBackend {
     if (!room) throw new Error(`seat ${seatId}: no room assigned (host-side mapping only)`)
     if (!this.generatedRooms.has(room)) await this.prepareRooms() // 惰性兜底：建号前补齐该席房间
     const username = `agent_${seatSlug(seatId)}`
+    // 跨重启/跨容器幂等（compose 全链实测发现）：世界卷持久化后同名用户仍在世界库，
+    // createUser 会 already exists——先查世界，在则收编映射不建号。
+    const world = await this.svc.getWorld()
+    if (world.users.some((u) => u.username === username)) {
+      this.users.set(seatId, username)
+      return { id: username, username }
+    }
     const user = await this.svc.createUser({
       username,
       room,

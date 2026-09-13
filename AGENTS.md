@@ -4,23 +4,34 @@ Screeps 斗蛐蛐独立程序：**对局参与者只能是 Agent（LLM 会话）
 
 ## 当前状态（2026-09-13）
 
-- **M0/M1/M2/M3 全部完成关闭**：M3（多局生命周期，plan-M3 v3 审查闭环 PASS）已实施完毕——
-  settle 定点拆解回收（removeUser/removeRoom 幂等原语，崩溃由 history pending 重启补拆解）、
-  房间池可配置（`--rooms`/`ARENA_ROOMS`）、多活跃对局（池可容纳即可建局）、对局历史
-  （`GET /api/history` + 大厅历史表）。M2 的「settle 后仅同席位可再建局」「房间池固定」
-  「单活跃对局」三条边界已全部消除。验证证据见 `docs/LOG.md` M3 条目。
-- **M3 验证基线（全部实测）**：`npm test` **124/124 绿**（22 文件）+ typecheck 零错 +
-  `build`/`build:client` 零错；S0 拆解探针（`scripts/s0-removal-probe.ts`）真实私服全绿；
-  `test:live` **4/4 绿**（M3 增补拆解闭环/相邻房/崩溃恢复）；`scripts/m2-smoke.sh` M3 后
-  **13 步**全绿（teardown done / 换席位再建局 / teardown-recovered=1 / journal 恢复）；
-  compose 重建后全链（create→settle→history→再建局）。成果审查闭环 PASS（2026-09-13，
-  一审 FAIL 3 阻塞 → 修复 → 复审 PASS 余 4 非阻塞已落实/记录）。
-- **M2 遗留能力**（仍有效）：真实计分（tiebreak creeps→rooms→rclTotal）、WS console 流、
-  interrupted 恢复、地图公平性重掷、seatSlug 碰撞加固、compose 容器化+数据卷。
-- **M3 边界**：单世界多局共用同一世界（锦标赛形态建议多世界，M4 评估跨容器拆分）；
-  prepare 期私服 restart 短暂中断他局（D5 显式接受）；跨局进犯残骸随 removeUser 全清
-  （比原计划「接受残骸」更干净）；Agent 工作区目录跨局保留（超时兜底语义依赖）。
-- **M4+**：锦标赛编排、回放/战报详情、arena-blitz（镜像克隆）、房间可见性精确化、
+- **M0–M4 全部完成关闭**：M4（锦标赛编排，plan-M4 v3 审查闭环 PASS）已实施完毕——
+  round-robin 配对轮转（circle method，奇数 bye）、逐场状态机 scheduled→created→settled、
+  pump 单飞（建局触发点：建届/wireMachine settled/30s 兜底定时器）、启动恢复三态
+  （settled 未回填→history 按 matchId 回填；created 失联→查 history 后重排；scheduled→
+  journal/history pair 采纳优先，否则重排）、开局驱动（starter 5s 轮询 + 有界初始唤醒
+  3 次/席，在途 prompt 不重发不耗配额，超界落届 errors 可查面）、积分榜
+  （积分→胜场→净胜分→抽签序）、API `GET/POST /api/tournaments`（无 provider 400 拒建）。
+- **M4 验证基线（全部实测）**：`npm test` **157/157 绿**（27 文件）+ typecheck 零错 +
+  `build`/`build:client` 零错；`test:live` **7/7 绿**（M4 增补：restart 竞态回归 + 锦标赛
+  真实私服链 + kill-9 三真）；`scripts/m2-smoke.sh` 13 步全绿；compose 锦标赛全链
+  （mock provider 驱动：建届→自动建局→双席提交→starter 开局→settle→届终→积分榜，
+  errors=[]；down 保卷再 up：锦标赛/history 均在）。成果审查闭环见 `docs/LOG.md` M4 条目。
+- **M4 期间修复的关键 bug**（均由真实链路暴露）：① `ScreepsService.restart()` 竞态——
+  stop 窗口内并发 ensureRunning 穿透 guard 各自 ensure → 双/三重私服互踩 db.json 丢房
+  （E7N5 实丢；kill-9 IT 取证 + 探针 0/3 对照）。修复：restart 单飞 + stop→ensure→resume
+  核心作为 barrier 塞进 ensurePromise 共享 + live 回归测试钉死。② Agent `submit_code`
+  只上传私服未登记进对局机器 → starter 开局门槛永不可达（`seatBackendFor` 补登记）。
+  ③ 席位 waker 并发重入重复建号（单飞收口）。④ `bindUser` 跨重启不幂等（世界卷持久化
+  后同名用户 already exists——先查世界收编）。⑤ compose 持久卷缺 history/tournaments/
+  agents 三卷（容器重建即丢，已补）。
+- **M2/M3 能力**（仍有效）：真实计分（tiebreak creeps→rooms→rclTotal）、WS console 流、
+  interrupted 恢复、地图公平性重掷、seatSlug 碰撞加固、compose 容器化+数据卷、
+  settle 定点拆解回收、房间池可配置、多活跃对局、对局历史。
+- **M4 边界**：单世界多局共用同一世界（锦标赛形态建议多世界，跨容器拆分待评估）；
+  prepare 期私服 restart 短暂中断他局（D5 显式接受；免-restart 评估结论：不可行，
+  runner staticTerrainData 进程级缓存无增量刷新钩子，见 plan-M4 附录 A）；初始 prompt
+  只含本局信息（无跨局积分/排名——公平红线，负向测试钉住）；Agent 工作区目录跨局保留。
+- **M5+**：回放/战报详情、arena-blitz（镜像克隆）、房间可见性精确化、跨容器拆分评估、
   表现层统一收尾（用户决策：不并入功能里程碑）。
 - **Pi SDK spike 已通过**：`docs/spikes/pi-sdk.md`（S1–S6 全绿 + 5 条踩坑结论）。
 - 旧项目结论索引：`reference/AGENTS.md`（交接全文）、`reference/docs/LOG.md`（工程日志）、

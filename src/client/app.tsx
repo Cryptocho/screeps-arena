@@ -5,8 +5,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import type React from 'react'
 import type { MatchView, WorldSnapshot } from '../shared/types.js'
-import { createMatch, fetchHistory, fetchMatch, fetchMatches, fetchTerrain, fetchWorld, settleMatch, startMatch, subscribeConsole, subscribeMatch } from './api.js'
-import type { HistoryView } from './api.js'
+import { createMatch, fetchHistory, fetchMatch, fetchMatches, fetchTerrain, fetchTournaments, fetchWorld, settleMatch, startMatch, subscribeConsole, subscribeMatch } from './api.js'
+import type { HistoryView, TournamentView } from './api.js'
 import { TerrainCanvas } from './terrain-canvas.js'
 
 type Tab = 'lobby' | 'match'
@@ -115,6 +115,56 @@ function Lobby(props: {
         </tbody>
       </table>
       <MatchHistoryList />
+      <TournamentList />
+    </div>
+  )
+}
+
+/** 锦标赛（M4/D6）：编排列表 + 积分榜（HTTP 轮询 5s，与历史同款；样式收尾延后）。 */
+function TournamentList(): React.ReactElement {
+  const [tournaments, setTournaments] = useState<TournamentView[]>([])
+  useEffect(() => {
+    const load = async () => {
+      try {
+        setTournaments(await fetchTournaments())
+      } catch {
+        /* 锦标赛是冷数据，拉取失败不打扰大厅 */
+      }
+    }
+    void load()
+    const t = setInterval(() => void load(), 5000)
+    return () => clearInterval(t)
+  }, [])
+  if (tournaments.length === 0) return <></>
+  return (
+    <div style={{ marginTop: 16 }}>
+      <h3 style={{ fontSize: 13 }}>锦标赛</h3>
+      {tournaments.map((t) => (
+        <div key={t.id} style={{ marginBottom: 12 }}>
+          <div>
+            <b>{t.name}</b> <small>{t.id} · {t.format} · {t.matches.filter((m) => m.status === 'settled').length}/{t.matches.length} 场{t.finishedAt ? ' · 已结束' : ''}</small>
+          </div>
+          <table cellPadding={4}>
+            <thead>
+              <tr><th>选手</th><th>赛</th><th>胜</th><th>平</th><th>负</th><th>积分</th><th>净胜</th></tr>
+            </thead>
+            <tbody>
+              {t.standings.map((r) => (
+                <tr key={r.seatId}>
+                  <td>{r.username}</td>
+                  <td>{r.played}</td>
+                  <td>{r.wins}</td>
+                  <td>{r.draws}</td>
+                  <td>{r.losses}</td>
+                  <td><b>{r.points}</b></td>
+                  <td>{r.scoreDiff > 0 ? `+${r.scoreDiff}` : r.scoreDiff}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {t.errors.length > 0 && <small style={{ color: '#b00' }}>errors: {t.errors.join('; ')}</small>}
+        </div>
+      ))}
     </div>
   )
 }

@@ -1,6 +1,6 @@
-# TEST.md — 用户手测指导（M1 + M2 + M3）
+# TEST.md — 用户手测指导（M1 + M2 + M3 + M4）
 
-> 纪律：本文件每条命令均已由 Agent 在本环境真实执行并验证通过（最近：2026-09-13 M3）。
+> 纪律：本文件每条命令均已由 Agent 在本环境真实执行并验证通过（最近：2026-09-13 M4）。
 > 需要您手测的仅限浏览器交互观感；未实测项均如实标注。
 
 ## 0. 前置
@@ -61,6 +61,38 @@ m2-smoke 13 步全绿（含 history+teardown done / 换席位再建局 / teardow
 compose 全链（create→settle→history done→换席位再建局）。**注意边界**：建局 prepareRooms 完成
 时私服 restart 一次，会短暂中断他局 run/console（现有游标/重试吸收，plan-M3 D5 显式接受）。
 
+## 0.8 M4 锦标赛编排（已实测 2026-09-13）
+
+M4 起：round-robin 锦标赛（2–8 人，配对轮转）→ 自动逐场建局/开局 → settle 回填 →
+积分榜（积分→胜场→净胜分→抽签序）。API：
+
+```sh
+# 建锦标赛（需 provider：有 OPENROUTER_API_KEY 才接受，否则 400）
+curl -s -X POST http://localhost:8787/api/tournaments -H 'content-type: application/json' \
+  -d '{"name":"duel","participants":[{"seatId":"a","username":"a"},{"seatId":"b","username":"b"}]}'
+curl -s http://localhost:8787/api/tournaments            # 列表 + 积分榜
+curl -s http://localhost:8787/api/tournaments/<id>       # 详情：matches 逐场 status/matchId/result
+```
+
+**Agent 实测记录（2026-09-13，mock provider 全链）**：本环境无真实 LLM key，用
+`scripts/mock-llm.ts`（OpenAI 兼容 mock，首轮回 submit_code）驱动了完整链路：
+
+```sh
+fnm exec --using=22 -- npx tsx scripts/mock-llm.ts &        # 宿主 mock LLM（:8901）
+OPENROUTER_API_KEY=mock SMOKE_BASE_URL=http://host.docker.internal:8901/v1 \
+  ARENA_MODEL=mock-1 docker compose up --build -d
+# → POST /api/tournaments → 首场自动 created（真实房间生成+建号）
+# → 双席位收到初始 prompt → mock 提交代码 → starter 自动开局（phase=running，errors=[]）
+# → POST /api/matches/<mid>/settle → 锦标赛 status=settled、finishedAt 落、standings 出
+# → docker compose down（保卷）再 up：锦标赛状态/history 均在（tournaments 卷持久化）
+```
+
+本次实测顺带修了 3 个只有全链才暴露的 bug：① Agent `submit_code` 只上传私服未登记进
+对局机器 → starter 开局门槛永不可达（`seatBackendFor` 补登记）；② 席位 waker 并发重入
+重复建号（单飞收口）；③ compose 持久卷缺 history/tournaments/agents（重建即丢）。
+**带真实 LLM 的锦标赛全程（双 Agent 真写代码分出胜负）需要您的 key**，命令同上——
+把 mock 环境变量换成您的 `OPENROUTER_API_KEY`、去掉 `SMOKE_BASE_URL`/`ARENA_MODEL` 即可（此条未实测，待您手测）。
+
 ## 1. 启动（两个终端，dev mock 模式）
 
 **终端 1**（HTTP 桥，端口 8787）：
@@ -105,13 +137,14 @@ WS 订阅增量（M2，2s 轮询已删）；**样式仍未做**（全部功能�
 ## 3. 自动化 lane（已实测，供回归）
 
 ```sh
-fnm exec --using=22 -- npm test           # 124/124 绿（22 文件，离线 mock，零成本，M3 含 pool/history/mod 拆解/双局并存打表）
+fnm exec --using=22 -- npm test           # 157/157 绿（27 文件，离线 mock，零成本；M4 含 bracket/store/scheduler/flow/fairness）
 fnm exec --using=22 -- npm run typecheck  # 零错
 fnm exec --using=22 -- npm run build && fnm exec --using=22 -- npm run build:client  # 服务端 main.mjs + vite 前端零错
-fnm exec --using=22 -- npm run test:live  # 真实私服 IT（首次安装 ≈6 分钟；M3 增补后 4/4 绿，含拆解闭环+相邻房+崩溃恢复）
+fnm exec --using=22 -- npm run test:live  # 真实私服 IT（首次安装 ≈6 分钟；M4 后 7/7 绿，含 restart 竞态回归+锦标赛链+kill-9 恢复）
 OPENROUTER_API_KEY=… fnm exec --using=22 -- npm run test:smoke  # 真实 LLM 冒烟（已实测 418s 绿）
 sh scripts/m2-smoke.sh                     # main.mjs 全链冒烟（M3 后 13 步，含 teardown/换席位再建局/恢复）
 fnm exec --using=22 -- npx tsx scripts/s0-removal-probe.ts   # M3 拆解原语真实私服探针（幂等可重跑）
+fnm exec --using=22 -- npx tsx scripts/mock-llm.ts           # M4 mock LLM（compose 锦标赛链驱动，见 §0.8）
 ```
 
 > **lane 隔离说明**：`test:live` / `test:smoke` 各用独立 vitest config

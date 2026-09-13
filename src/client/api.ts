@@ -19,6 +19,30 @@ export async function fetchHistory(): Promise<HistoryView[]> {
   return body.history
 }
 
+/** 锦标赛行（M4/D6，GET /api/tournaments 投影）。 */
+export interface TournamentView {
+  id: string
+  name: string
+  createdAt: number
+  format: string
+  participants: Array<{ seatId: string; username: string }>
+  matches: Array<{
+    pair: [string, string]
+    status: string
+    matchId?: string
+    result?: { winner: string | null; scores: Record<string, number>; settledAt: number } | null
+  }>
+  finishedAt?: number | null
+  errors: string[]
+  standings: Array<{ seatId: string; username: string; played: number; wins: number; draws: number; losses: number; points: number; scoreDiff: number }>
+}
+
+export async function fetchTournaments(): Promise<TournamentView[]> {
+  const res = await fetch('/api/tournaments')
+  const body = (await res.json()) as { tournaments: TournamentView[] }
+  return body.tournaments
+}
+
 export async function fetchMatches(): Promise<MatchView[]> {
   const res = await fetch('/api/matches')
   const body = (await res.json()) as { matches: MatchView[] }
