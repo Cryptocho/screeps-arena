@@ -1,5 +1,23 @@
 # 工程日志（倒序）
 
+## 2026-09-13 M4 成果审查一轮：PASS——M4 关闭
+
+**一审结论**：**PASS**（0 阻塞 / 6 非阻塞）。D1–D9 逐条符合；公平红线三项负向测试实证
+实质性（tournament 导入面无 src/agent/*、buildSeatTools 调用计数=1、初始 prompt 无跨局
+信息、无 provider 400）；restart barrier 同步无穿透窗口 + resume 无死锁论证成立；审查员
+实跑 `npm test` 157/157 + typecheck 零错。
+
+**非阻塞 6 条处置**：① 定时器措辞与 plan 字面不一致（实现为无条件 interval + 循环体自判，
+行为等价、unref 空闲开销近零）——接受为等价实现，记录在此；② 并发 restart 参数合并语义
+（第二个调用的 options 被忽略）——已加代码注释钉住前提（当前唯一形态 resume:true）；
+③ restart core 内 stop 抛错时 status 停留 'stopped'/'restarting'（错误仍上抛可查）——接受；
+④ releaseSeat expected.username=undefined 的极端边界（settle 前席位必已建号，概率≈0，
+M3 已知形态）——接受；⑤ promptState Map 无淘汰（量级=局数×席位，微泄漏）——接受；
+⑥ 审查员未独立复跑 test:live/compose（指令排除）——本日志上条已有完整实测记录。
+
+**M4 验证基线（最终）**：同上条——157/157 + typecheck/build 零错 + test:live 7/7 +
+m2-smoke 13 步 + compose 锦标赛全链（mock 驱动，errors=[]）+ 卷持久化验证。
+
 ## 2026-09-13 M4 锦标赛编排：实施 + 全链实测 + 5 bug 修复（成果审查待做）
 
 **实施（plan-M4 v3 S0–S6）**：`src/server/tournament/`（types/bracket/store/scheduler）+

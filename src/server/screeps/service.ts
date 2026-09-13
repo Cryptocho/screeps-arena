@@ -322,6 +322,8 @@ export class ScreepsService {
    * clobber 正在进行的启动）。
    */
   async restart(options: { resume?: boolean } = {}): Promise<void> {
+    // 并发合并：第二个调用共享在途重启（其 options 被忽略——当前唯一调用形态 resume:true，
+    // 若未来出现差异化 options 需改为排队而非合并，审查备注 2）
     if (this.restartPromise) return this.restartPromise
     this.restartPromise = this.doRestart(options).finally(() => {
       this.restartPromise = undefined
