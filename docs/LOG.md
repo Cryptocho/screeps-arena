@@ -1,5 +1,17 @@
 # 工程日志（倒序）
 
+## 2026-09-14 真实 LLM 锦标赛全程实测通过——TEST.md §0.8 手测项清零
+
+用户确认 `.bashrc` 末行有 `export OPENROUTER_API_KEY="sk-or-v1-…"`，但标准非交互早退守卫
+（`if [[ $- != *i* ]]; then return; fi`）使其在非交互 shell 恒为空。取用方法（不落盘不打印）：
+`eval "$(grep -E '^export OPENROUTER_API_KEY=' ~/.bashrc)"`。
+
+**实测（compose + 真实 key + 默认模型 mimo-v2.5，短回合 matchConfig roundMs=20s/maxRounds=2）**：
+建届 → 双 Agent 真写代码 submit_code（tool_end OK×5）→ starter 自动开局 → 2 回合真跑 →
+roundsExhausted 自动结算（ra=103/rb=109 展示分；双活按规则 draw，scoreDiff +6 使 rb 居
+积分榜首位——计分语义与 plan-M2 §1 一致，displayScore≠胜负判定）→ 届终回填，errors=[]，
+teardown done，history done。TEST.md §0.8「待您手测」项就此清零（浏览器观感复查仍属可选）。
+
 ## 2026-09-13 M4 成果审查一轮：PASS——M4 关闭
 
 **一审结论**：**PASS**（0 阻塞 / 6 非阻塞）。D1–D9 逐条符合；公平红线三项负向测试实证

@@ -90,9 +90,13 @@ OPENROUTER_API_KEY=mock SMOKE_BASE_URL=http://host.docker.internal:8901/v1 \
 本次实测顺带修了 3 个只有全链才暴露的 bug：① Agent `submit_code` 只上传私服未登记进
 对局机器 → starter 开局门槛永不可达（`seatBackendFor` 补登记）；② 席位 waker 并发重入
 重复建号（单飞收口）；③ compose 持久卷缺 history/tournaments/agents（重建即丢）。
-**带真实 LLM 的锦标赛全程（双 Agent 真写代码分出胜负）需要您的 key**，命令同上——
-把 mock 环境变量换成您的 `OPENROUTER_API_KEY`、去掉 `SMOKE_BASE_URL`/`ARENA_MODEL` 即可（此条未实测，待您手测）。
 
+**真实 LLM 锦标赛全程（已实测 2026-09-14，OPENROUTER_API_KEY + 默认模型 mimo-v2.5）**：
+建届 → 双 Agent 真写代码并 submit_code（tool_end OK×5）→ starter 自动开局 → 2 回合真跑
+（roundMs=20s 缩短配置）→ roundsExhausted 自动结算（ra=103/rb=109 展示分，双活按规则
+draw，scoreDiff +6 使 rb 列积分榜首位）→ 届终回填，errors=[]，teardown done。
+注：`.bashrc` 的 export 行被非交互早退守卫挡住，非交互 shell 里取用方法：
+`eval "$(grep -E '^export OPENROUTER_API_KEY=' ~/.bashrc)"`（只进当前进程环境，不落盘）。
 ## 1. 启动（两个终端，dev mock 模式）
 
 **终端 1**（HTTP 桥，端口 8787）：
