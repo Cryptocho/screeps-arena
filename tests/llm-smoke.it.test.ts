@@ -1,5 +1,5 @@
 /**
- * S6 真实 LLM 冒烟 IT（test:smoke lane，plan-M1 §3）——OpenRouter + xiaomi/mimo-v2.5。
+ * S6 真实 LLM 冒烟 IT（test:smoke lane，plan-M1 §3）——OpenRouter + qwen/qwen3.7-flash（2026-09-14 起用户拍板默认）。
  *
  * 定位（M1 复审问题 6 施工决定）：本 IT 是「真实 provider 行为探针」，钉的是真实 LLM 的
  * SSE / 工具调用行为差异；`test:live` 钉的是「代码真落私服」链路。plan §4 的
@@ -22,7 +22,7 @@ import { buildSeatTools } from '../src/agent/tools.js'
 import { MatchMachine } from '../src/server/match/machine.js'
 import type { MatchEvent } from '../src/server/match/machine.js'
 
-const MODEL = process.env.SMOKE_MODEL ?? 'xiaomi/mimo-v2.5'
+const MODEL = process.env.SMOKE_MODEL ?? 'qwen/qwen3.7-flash'
 const KEY = process.env.OPENROUTER_API_KEY
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'screeps-arena-smoke-'))

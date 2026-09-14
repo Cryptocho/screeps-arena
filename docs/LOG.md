@@ -1,5 +1,22 @@
 # 工程日志（倒序）
 
+## 2026-09-14 真实 LLM 锦标赛全程实测（qwen/qwen3.7-flash，自然打满 8 周期）+ 默认模型切换
+
+**默认模型切换（用户拍板）**：`xiaomi/mimo-v2.5` → `qwen/qwen3.7-flash`，此后所有真实
+LLM 调用统一用它。main.ts / dev-server.ts / llm-smoke 三处默认值已换
+（`--model`/`ARENA_MODEL`/`SMOKE_MODEL` 覆盖通道不变）。
+
+**实测（裸机 main.mjs + 真实 key + qwen/qwen3.7-flash + 默认配置 roundMs=60s/maxRounds=8）**：
+建届（非 400）→ 双 Agent 首唤醒真写代码 + submit_code（machine 登记链路实证）→ starter
+自动开局 → **自然打满 8 周期**（每轮 roundBreak 唤醒 → Agent 改码重提 → 续跑，含
+submit_code OK/ERR 交替的真实重试形态）→ roundsExhausted 自动结算 ra=105/rb=100（真实
+计分非全 0；双活 draw，scoreDiff +5 使 ra 居积分榜首位）→ 届终回填 finishedAt +
+standings，**errors=[]**，history teardown done。新观察：日志 `wake (started) failed:
+prompt already in flight` 确认为驱动器串行唤醒的预期拒绝（starter 首发在途时 started
+事件唤醒被拒；非致命，下轮 roundBreak 唤醒接上，对局完整推进不受影响）——记入 TEST.md
+§0.8 供排查对照。进程清场纪律复核：kill 包装层 PID 后 fnm 子进程与 launcher 树会残留，
+须按 `pgrep -af` 列表逐 PID 精确清理。
+
 ## 2026-09-14 真实 LLM 锦标赛全程实测通过——TEST.md §0.8 手测项清零
 
 用户确认 `.bashrc` 末行有 `export OPENROUTER_API_KEY="sk-or-v1-…"`，但标准非交互早退守卫

@@ -18,7 +18,7 @@ import { buildSeatTools } from '../src/agent/tools.js'
 
 const PORT = Number(process.env.PORT ?? 8787)
 const KEY = process.env.OPENROUTER_API_KEY
-const MODEL = process.env.SMOKE_MODEL ?? 'xiaomi/mimo-v2.5'
+const MODEL = process.env.SMOKE_MODEL ?? 'qwen/qwen3.7-flash'
 const MODEL_BASE = process.env.SMOKE_BASE_URL ?? 'https://openrouter.ai/api/v1'
 
 const driver = new MatchDriver({ intervalMs: 500, log: (m) => console.log('[driver]', m) })

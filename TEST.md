@@ -91,19 +91,28 @@ OPENROUTER_API_KEY=mock SMOKE_BASE_URL=http://host.docker.internal:8901/v1 \
 对局机器 → starter 开局门槛永不可达（`seatBackendFor` 补登记）；② 席位 waker 并发重入
 重复建号（单飞收口）；③ compose 持久卷缺 history/tournaments/agents（重建即丢）。
 
-**真实 LLM 锦标赛全程（已实测 2026-09-14，OPENROUTER_API_KEY + 默认模型 mimo-v2.5）**：
-建届 → 双 Agent 真写代码并 submit_code（tool_end OK×5）→ starter 自动开局 → 2 回合真跑
-（roundMs=20s 缩短配置）→ roundsExhausted 自动结算（ra=103/rb=109 展示分，双活按规则
-draw，scoreDiff +6 使 rb 列积分榜首位）→ 届终回填，errors=[]，teardown done。
+**真实 LLM 锦标赛全程（已实测 2026-09-14，OPENROUTER_API_KEY）**。默认模型 2026-09-14
+起用户拍板改为 `qwen/qwen3.7-flash`（main/dev-server/llm-smoke 三处默认值已换，可
+`--model`/`ARENA_MODEL`/`SMOKE_MODEL` 覆盖）。两次实测：
+- mimo-v2.5：建届 → 双 Agent 真写代码并 submit_code（tool_end OK×5）→ starter 自动开局 →
+  2 回合真跑（roundMs=20s 缩短配置）→ roundsExhausted 自动结算（ra=103/rb=109，scoreDiff
+  +6 使 rb 列积分榜首位）→ 届终回填，errors=[]，teardown done。
+- qwen/qwen3.7-flash：默认配置（roundMs=60s/maxRounds=8）自然打满 8 周期 → roundsExhausted
+  结算（ra=105/rb=100，scoreDiff +5 使 ra 居首）→ 届终 + 积分榜，errors=[]，teardown done；
+  周期推进/roundBreak 唤醒/超时兜底全链真实运转。注：日志中 `wake (started) failed:
+  prompt already in flight` 是驱动器串行唤醒的预期拒绝（starter 首发在途时 started 事件
+  唤醒被拒，非致命，下轮 roundBreak 唤醒接上）。
+
 注：`.bashrc` 的 export 行被非交互早退守卫挡住，非交互 shell 里取用方法：
 `eval "$(grep -E '^export OPENROUTER_API_KEY=' ~/.bashrc)"`（只进当前进程环境，不落盘）。
+
 ## 1. 启动（两个终端，dev mock 模式）
 
 **终端 1**（HTTP 桥，端口 8787）：
 ```sh
 fnm exec --using=22 -- npx tsx scripts/dev-server.ts
 # 预期输出：[dev] http://127.0.0.1:8787 (mock world; wake=disabled)
-# 若已 export OPENROUTER_API_KEY，则 wake=real xiaomi/mimo-v2.5（会真实调用 LLM）
+# 若已 export OPENROUTER_API_KEY，则 wake=real qwen/qwen3.7-flash（会真实调用 LLM）
 ```
 （已实测 2026-09-11：启动正常；`/api/matches` create→list→get→start(409 拒)→settle→
 terrain→world→console 全部端点返回预期。）
