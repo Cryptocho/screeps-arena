@@ -131,6 +131,24 @@ tick 耦合，plan-M5 R7/n1）；genStrongholds NPC 要塞 cronjob（墙钟拍�
 注：`.bashrc` 的 export 行被非交互早退守卫挡住，非交互 shell 里取用方法：
 `eval "$(grep -E '^export OPENROUTER_API_KEY=' ~/.bashrc)"`（只进当前进程环境，不落盘）。
 
+## 0.10 M6 前浏览器全链实测（已实测 2026-09-14，ZCode 内置浏览器）
+
+真实私服 + 真实 qwen Agent，浏览器走完整链（直建 arena 局 → 交码 → 自动开局 → 观战 →
+ticksExhausted 结算 → 历史表），两局全绿，实测暴露并修复三洞（见 LOG 2026-09-14 条）。
+复测命令：
+
+```sh
+# 起服（后台务必 setsid 脱离——nohup 不挡进程组 SIGTERM，长轮询调用超时会连坐杀服务）
+setsid env OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
+  fnm exec --using=22 -- node dist/server/main.mjs --port 8787 --host 127.0.0.1 --data-dir /tmp/m6-browse
+# 浏览器开 http://127.0.0.1:8787，或直建后观察：
+curl -s -X POST http://localhost:8787/api/matches -H 'content-type: application/json' \
+  -d '{"preset":"arena-blitz","players":[{"seatId":"a","username":"a"},{"seatId":"b","username":"b"}]}'
+# 预期：≈1 分钟内 phase running（Agent 交码 → directStarter auto-start）；
+# 详情页：席位表 rooms/rcl/spawns/creeps 实时非 0；console 面板有结构化行（含 error 帧）；
+# 地图 canvas 可见 W15N15/W14N15 镜像对；结算后历史表出现 draw/ticksExhausted/teardown done。
+```
+
 ## 1. 启动（两个终端，dev mock 模式）
 
 **终端 1**（HTTP 桥，端口 8787）：

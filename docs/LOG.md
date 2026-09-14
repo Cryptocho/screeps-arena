@@ -1,5 +1,38 @@
 # 工程日志（倒序）
 
+## 2026-09-14 M6 前浏览器实测：全链验收绿 + 实测暴露三洞修复（审查闭环 PASS）
+
+**背景**：M2–M5 的前端改动（锦标赛表/form 标签/详情页/恢复）自 M1 后从未浏览器实测。
+本次用真实私服 + 真实 qwen Agent 在浏览器（ZCode IAB）走完整链：直建 arena 局 → 双 Agent
+真交码 → 自动开局 → 观战（席位表/地图 canvas/console 流/errors）→ ticksExhausted 结算
+（draw a:109 b:109 完美镜像）→ 历史表 teardown done。两局全绿。
+
+**实测暴露并修复三洞**（1047583 + 784ce76 + 489ea9f）：
+1. **HTTP 直建局永停 creating**：初始唤醒只有锦标赛 starter 发（1047583 补），自动开局
+   同样只有锦标赛 starter 调 `machine.start()`——直建局全员交码后无人 start。修复：
+   main.ts directStarter 5s 扫描（phase=creating + 全员有码 + id 不在任何 tournament），
+   SIGINT 清理；恢复局/世界局同样受益。
+2. **console 流恒 "(no output)"**：私服 ring 存结构化帧（{messages:{log,results}}/{error}），
+   前端 `subscribeConsole` 只收 `typeof l === 'string'` → 全被过滤（M2 起 m2-smoke 服务端
+   验过、浏览器端从未验过）。修复：平移 reference `formatConsoleFrame` 到 arena.ts
+   `consoleSince`（+ 字符串直通超集），四种帧形测试钉住。
+3. **席位表 rooms/rcl/spawns/creeps 恒 0**：前端按 `p.username` 匹配 /api/world users，
+   真实用户名是 `agent_<seatSlug>`（M1 mock 形状埋的匹配假设）。修复：matchView 加
+   `screepsUsername`（host 侧 arena.resolveUser 的旁观投影；审查确认仅进人类旁观面、
+   不进 arena.report，不违公平红线），前端 `screepsUsername ?? username` 匹配。
+
+**审查闭环**：一审 FAIL（1 阻塞）——1047583 的初始唤醒在 createMatchInternal 里 fire-and-
+forget 直调 `wakerFor`，绕过 `wakerCreating` 单飞（并发双 AgentRunner/双 bindUser 竞态），
+且锦标赛对局双发 prompt 破坏 RB1 配额核算。修复（489ea9f）：唤醒移至 services.createMatch
+（锦标赛路径 scheduler 直连 createMatchInternal 不经过此处），经 `lazyWaker` 走单飞。
+**复审 PASS**（锦标赛 prompt 单路径有界；wakerFor 全文件仅 3 处命中；直建局实测 tool_end
+×16 + auto-start）。非阻塞遗留：directStarter start 失败时 5s 重试刷日志（概率极低）。
+
+**验证基线**：181/181（30 文件，+1 consoleSince 格式化用例）+ typecheck/build 零错 +
+真实 qwen 直建局两局全链绿（一次 journal interrupted recovery 恢复 running 亦实测）。
+**过程教训**：nohup 不挡进程组 SIGTERM——长轮询 Bash 调用超时会连坐杀服务，后台服务须
+`setsid` 脱离。
+
 ## 2026-09-14 M5 成果审查闭环：PASS——M5 关闭
 
 **一审 FAIL（1 阻塞）**：KillLedger 观察游标误存 gameTime（tick 数值）而 mod eventLog

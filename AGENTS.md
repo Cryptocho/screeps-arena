@@ -4,6 +4,13 @@ Screeps 斗蛐蛐独立程序：**对局参与者只能是 Agent（LLM 会话）
 
 ## 当前状态（2026-09-14，M5 关闭）
 
+- **M6 前浏览器全链实测绿（2026-09-14）**：真实私服 + 真实 qwen Agent 在浏览器走完整链
+  （直建 arena 局 → 交码 → 自动开局 → 观战 → ticksExhausted 结算 → 历史表）两局全绿；
+  实测暴露并修复三洞（1047583 + 784ce76 + 489ea9f，审查闭环复审 PASS）：① 直建局初始
+  唤醒缺失 + 永停 creating（无自动开局——directStarter 补）；② console 流恒空（对象帧
+  被前端过滤——formatConsoleFrame 平移）；③ 席位表恒 0（username≠agent_<slug>——
+  matchView 加 screepsUsername 旁观投影）。测试基线升至 181/181。过程教训：后台服务须
+  `setsid` 脱离（nohup 不挡进程组 SIGTERM，长轮询调用超时连坐杀服务）。
 - **M0–M5 全部完成关闭**：M5（arena-blitz，plan-M5 v2 复审 PASS）已实施完毕——
   单房 1v1 镜像歼灭（mod arenaGen/arenaProbe 回迁：W15N15 + 东邻镜像对称生成，禁 NPC）、
   preset/form 数据模型（PRESETS 表 + configFromPreset，锦标赛 matchConfig 直传吃 arena
