@@ -31,12 +31,13 @@ import type { SeatWaker } from './http/driver.js'
 import { startHttpServer } from './http/server.js'
 import type { ArenaHttpServices } from './http/routes.js'
 import { ScreepsService, modFileFromContent } from './screeps/service.js'
-import { RealArena } from './screeps/arena.js'
+import { RealArena, ARENA_BASE_ROOM, arenaMirrorRoom } from './screeps/arena.js'
 import { allocateRooms, assertSeatsFree } from './pool.js'
 import { recoverPendingTeardowns } from './teardown.js'
 import { MatchMachine } from './match/machine.js'
 import type { MatchEvent } from './match/machine.js'
-import type { MatchConfig } from './match/model.js'
+import { configFromPreset, DEFAULT_MATCH_CONFIG, PRESETS } from './match/model.js'
+import type { MatchConfig, MatchPreset } from './match/model.js'
 import { MatchJournal } from './match/journal.js'
 import type { MatchJournalRecord } from './match/journal.js'
 import { MatchHistory } from './history.js'
@@ -45,6 +46,8 @@ import { TournamentStore } from './tournament/store.js'
 import { TournamentScheduler, initialPromptText } from './tournament/scheduler.js'
 import { computeOutcome } from './match/score.js'
 import type { SeatScoreInput } from './match/score.js'
+import { KillLedger, arenaSettleDecision, ticksExhaustedDecision } from './match/arena-observe.js'
+import type { ArenaSettleDecision } from './match/arena-observe.js'
 import { AgentRunner } from '../agent/runner.js'
 import type { AgentProviderConfig } from '../agent/runner.js'
 import { buildSeatTools } from '../agent/tools.js'
@@ -80,6 +83,15 @@ if (ROOM_POOL.length === 0) {
   console.error('[main] room pool empty (use --rooms "E5N5,E7N5,…")')
   process.exit(1)
 }
+// M5/D3 守卫：房间池不得含 arena 镜像房（固定 W15N15 + 东邻镜像）——否则 world 局
+// prepareRooms 与 arena 局共用战场必撞车。
+const ARENA_ROOMS = new Set([ARENA_BASE_ROOM, arenaMirrorRoom(ARENA_BASE_ROOM)])
+for (const room of ROOM_POOL) {
+  if (ARENA_ROOMS.has(room)) {
+    console.error(`[main] room pool must not contain arena mirror rooms (${ARENA_BASE_ROOM},${arenaMirrorRoom(ARENA_BASE_ROOM)}): got ${room}`)
+    process.exit(1)
+  }
+}
 const journal = new MatchJournal(path.join(dataDir, 'journal', 'matches'))
 const history = new MatchHistory(path.join(dataDir, 'history'))
 /** teardown 失败可查面（D3）：settle 后 machine 已删、m.state.errors 不可达，独立列表 + GET。 */
@@ -93,7 +105,15 @@ if (!existsSync(modPath)) {
 }
 
 const svc = new ScreepsService(
-  { dataDir, tickDuration: 200, mods: [modFileFromContent('arena-mod.cjs', readFileSync(modPath, 'utf8'))] },
+  {
+    dataDir,
+    tickDuration: 200,
+    mods: [modFileFromContent('arena-mod.cjs', readFileSync(modPath, 'utf8'))],
+    // M5/[N3] form 感知 tick：存在活跃 arena 局（含 journal 恢复局）→ 150ms；
+    // ensure 链每次（重）启动按此重申——arena 局中私服重启不再静默回 200。
+    resolveTickDuration: () =>
+      [...machines.values()].some((m) => m.config.form === 'arena' && m.phase !== 'settled') ? 150 : 200,
+  },
   (msg, ...rest) => console.log('[svc]', msg.replace(/%s/g, () => String(rest.shift() ?? ''))),
 )
 const driver = new MatchDriver({
@@ -101,6 +121,8 @@ const driver = new MatchDriver({
   log: (m) => console.log('[driver]', m),
   // M2/S1：roundBreak 相位机器在 advance 前取分（roundsExhausted 真实结算的唯一新鲜取分点）
   scoreSnapshot: (m) => scoreSnapshotFor(m.players.map((p) => p.seatId)),
+  // M5/D5（B2 新增件）：arena 局 running 期结算观察（歼灭/双淘汰/maxTicks）
+  arenaObserve: (m) => observeArenaMatch(m),
 })
 const arena = new RealArena(svc, { rooms: {}, log: (m) => console.log('[arena]', m) })
 
@@ -134,6 +156,51 @@ async function scoreSnapshotFor(seatIds: string[]): Promise<Record<string, SeatS
     }
   }
   return snap
+}
+
+/* ---------------- M5/D5 arena 结算观察（B2 新增件） ---------------- */
+
+/** matchId → 击杀账本（观察游标 host 侧独立，n2——不与 report 的 per-user 游标共享 ring）。 */
+const arenaLedgers = new Map<string, KillLedger>()
+/** matchId → started 时 gameTime 快照（maxTicks 基线，D5：不假设 gameTime 归零）。 */
+const arenaStartGameTime = new Map<string, number>()
+/** [N4] 溢出警告去重（每局最多记一次）。 */
+const arenaOverflowWarned = new Set<string>()
+
+/** arena 局结算观察（driver 每 500ms 调用）：事件增量消费 → 归因 → world 快照 →
+ *  歼灭/双淘汰（lastStanding）或 maxTicks（ticksExhausted）决策；无决策返回 undefined。 */
+async function observeArenaMatch(m: MatchMachine): Promise<ArenaSettleDecision | undefined> {
+  const ledger = arenaLedgers.get(m.id) ?? new KillLedger()
+  arenaLedgers.set(m.id, ledger)
+  const raw = (await svc.system('eventLog', ledger.cursor)) as {
+    ok?: boolean
+    events?: Array<{ tick: number; eventsByRoom: Record<string, unknown[]> }>
+    cursor?: number
+    bound?: boolean
+    error?: string
+  }
+  if (raw.ok !== true) throw new Error(`eventLog failed: ${String(raw.error ?? 'unknown')}`)
+  if (raw.bound === false && !arenaOverflowWarned.has(m.id)) {
+    arenaOverflowWarned.add(m.id)
+    m.state.errors.push('event ring overflow detected (bound:false) — kill scores may be underestimated')
+    console.log(`[arena] ${m.id}: event ring overflow — kill scores may be underestimated`)
+  }
+  ledger.consume((raw.events ?? []) as Parameters<typeof ledger.consume>[0])
+  const world = await svc.getWorld()
+  const snap = await scoreSnapshotFor(m.players.map((p) => p.seatId))
+  // seatId → Screeps user id（归因键）
+  const killScore: Record<string, number> = {}
+  for (const p of m.players) {
+    const username = arena.resolveUser(p.seatId)
+    const u = world.users.find((x) => x.username === username)
+    killScore[p.seatId] = ledger.score(u?.id ?? null)
+  }
+  const seats = m.players.map((p) => p.seatId)
+  const decision = arenaSettleDecision(snap, killScore)
+  if (decision) return decision
+  const start = arenaStartGameTime.get(m.id)
+  if (start === undefined) return undefined // started 事件尚未带回 gameTime 基线
+  return ticksExhaustedDecision([seats[0]!, seats[1]!], killScore, start, world.gameTime, m.config.maxTicks, snap)
 }
 
 function toRecord(m: MatchMachine): MatchJournalRecord {
@@ -218,6 +285,15 @@ function wireMachine(m: MatchMachine): (e: MatchEvent) => void {
   return (e) => {
     void driver.onEvent(m, e)
     broadcast({ type: 'match_state', match: m.id, phase: m.phase, roundIndex: m.state.roundIndex, event: e.type })
+    // M5/D5：arena 局 started 时记录 gameTime 基线（maxTicks 起算点，不假设归零），
+    // 并解除 prepareArena 的 paused（双席建号已在 paused 世界完成——防 Invader 抢注）
+    if (e.type === 'started' && m.config.form === 'arena' && !arenaStartGameTime.has(m.id)) {
+      void svc.system('resume').catch((err) => console.log(`[arena] ${m.id} resume failed:`, String(err)))
+      void svc
+        .getWorld()
+        .then((w) => arenaStartGameTime.set(m.id, w.gameTime))
+        .catch((err) => console.log(`[arena] ${m.id} gameTime baseline failed:`, String(err)))
+    }
     try {
       if (e.type === 'settled') {
         // D3 顺序：history(pending) 先落（含映射快照）→ journal.remove → machines 释放
@@ -269,10 +345,14 @@ async function wakerFor(seatId: string): Promise<SeatWaker> {
 
 const machines = new Map<string, MatchMachine>()
 
-/** 建局唯一正道（M4/D5：HTTP 与锦标赛调度器共用同一函数，非自调 HTTP）。 */
+/** 建局唯一正道（M4/D5：HTTP 与锦标赛调度器共用同一函数，非自调 HTTP）。
+ *  M5/D1：preset 展开（显式 config 字段覆盖）；botCode 仅供 server 内部 IT/调度链
+ *  （HTTP 路由层剥除——LLM 永不经由 HTTP 注代码，公平边界）。 */
 function createMatchInternal(input: {
   config?: Partial<MatchConfig>
+  preset?: MatchPreset
   players: Array<{ seatId: string; username: string }>
+  botCode?: Record<string, string>
 }): MatchMachine {
   // 成果审查阻塞 3：跨对局 seatId 守卫（pool.ts 纯函数）——活跃对局占用的 seatId 拒绝
   // 复用（allocateRooms 只看房间占池，看不出版位易主）。
@@ -280,15 +360,53 @@ function createMatchInternal(input: {
     [...machines.values()].flatMap((x) => x.players.map((p) => p.seatId)),
     input.players.map((p) => p.seatId),
   )
+  // M5/D1：preset 展开（显式字段覆盖）；arena 单飞守卫（R1/[N7]：machines 含 journal
+  // 恢复局——同世界同时只一场 blitz）。
+  const config: MatchConfig = input.preset
+    ? configFromPreset(input.preset, input.config)
+    : input.config?.form === 'arena'
+      ? { ...DEFAULT_MATCH_CONFIG, ...PRESETS['arena-blitz'], ...input.config } // 锦标赛 matchConfig 直传通道：arena 预设基底（否则 maxTicks 丢失——验收局实测）
+      : { ...DEFAULT_MATCH_CONFIG, ...input.config }
+  if (config.form === 'arena') {
+    if (input.players.length !== 2) {
+      throw new Error(`arena matches require exactly 2 players (base + mirrored room), got ${input.players.length}`)
+    }
+    if ([...machines.values()].some((x) => x.config.form === 'arena' && x.phase !== 'settled')) {
+      throw new Error('an arena match is already active in this world (single-flight; settle it first)')
+    }
+  }
   // M3/D4：守卫从「无活跃对局」改为「池可容纳」（allocation 纯函数在 pool.ts，
   // roomsSnapshot 是唯一在占事实源——含 journal 恢复局房间）。
   const m = new MatchMachine({
     players: input.players,
-    ...(input.config ? { config: input.config } : {}),
+    ...(input.preset || input.config ? { config } : {}),
     onEvent: (e) => wireMachine(m)(e),
   })
-  for (const [seatId, room] of Object.entries(allocateRooms(ROOM_POOL, arena.roomsSnapshot(), input.players.map((p) => p.seatId)))) {
-    arena.assignRoom(seatId, room)
+  if (m.config.form === 'arena') {
+    // D3：固定镜像房（不占房间池、不触公平重掷——镜像即公平）；战场后台预热
+    //（arenaGen 单飞 + B3 generatedRooms 登记），bindUser 经 ensureRoomReady 等待。
+    arena.assignRoom(m.players[0]!.seatId, ARENA_BASE_ROOM)
+    arena.assignRoom(m.players[1]!.seatId, arenaMirrorRoom(ARENA_BASE_ROOM))
+    void arena
+      .prepareArena()
+      .then(() => {
+        // 对称 spawn 坐标由 prepareArena 按真实地形选定并存实例（bindUser 按房间自取）
+        // botCode 注入（[N6]：IT/内部链建号即注码；无 botCode = Agent 空壳起步热更）
+        if (input.botCode) {
+          for (const p of m.players) {
+            arena
+              .bindUser(p.seatId, input.botCode)
+              .catch((err) => console.log(`[arena] botCode bind ${p.seatId} failed:`, String(err)))
+          }
+        }
+      })
+      .catch((err) => console.log('[arena] prepareArena failed:', String(err)))
+  } else {
+    for (const [seatId, room] of Object.entries(allocateRooms(ROOM_POOL, arena.roomsSnapshot(), input.players.map((p) => p.seatId)))) {
+      arena.assignRoom(seatId, room)
+    }
+    // 房间生成 + 公平性校验重掷后台预热（建号/首唤醒前完成；幂等 + 并发安全）
+    void arena.prepareRooms().catch((err) => console.log('[arena] prepareRooms failed:', String(err)))
   }
   machines.set(m.id, m)
   // 驱动链接线（M1 复审问题 3 教训；成果审查阻塞 1）：createMatch 必须 watch，
@@ -296,8 +414,6 @@ function createMatchInternal(input: {
   const wakers: Record<string, SeatWaker> = {}
   if (provider) for (const p of input.players) wakers[p.seatId] = lazyWaker(p.seatId)
   driver.watch(m, wakers)
-  // 房间生成 + 公平性校验重掷后台预热（建号/首唤醒前完成；幂等 + 并发安全）
-  void arena.prepareRooms().catch((err) => console.log('[arena] prepareRooms failed:', String(err)))
   return m
 }
 
@@ -341,8 +457,11 @@ function seatBackendFor(seatId: string) {
     submitCode: async (user: string, modules: Record<string, string>) => {
       const result = await arena.submitCode(user, modules)
       if (result.ok) {
+        // [N8]：creating/roundBreak 照旧；arena 的 running 期 = 热更（form 分支）同样登记
         const m = [...machines.values()].find(
-          (x) => x.players.some((p) => p.seatId === seatId) && (x.phase === 'creating' || x.phase === 'roundBreak'),
+          (x) =>
+            x.players.some((p) => p.seatId === seatId) &&
+            (x.phase === 'creating' || x.phase === 'roundBreak' || (x.phase === 'running' && x.config.form === 'arena')),
         )
         if (m) {
           try {
@@ -383,7 +502,13 @@ function lazyWaker(seatId: string): SeatWaker {
 const services: ArenaHttpServices = {
   matches: () => [...machines.values()],
   match: (id) => machines.get(id),
-  createMatch: (input) => createMatchInternal(input),
+  createMatch: (input) => {
+    // M5/D6：无 provider 的 arena 局拒建——建号完成前世界保持 paused，无 Agent 提交
+    // 则永不开局、永远 paused（观战形态时钟驱动局也过不了代码门槛）
+    const form = input.preset === 'arena-blitz' || input.config?.form === 'arena' ? 'arena' : 'world'
+    if (form === 'arena' && !provider) throw new Error('arena matches require a provider (OPENROUTER_API_KEY missing)')
+    return createMatchInternal(input)
+  },
   createTournament: (input) => {
     // D6：无 provider（观战形态）拒建——无唤醒的锦标赛永不完成且无提示
     if (!provider) throw new Error('tournament requires a provider (OPENROUTER_API_KEY missing)')

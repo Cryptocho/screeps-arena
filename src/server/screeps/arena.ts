@@ -22,8 +22,20 @@ export interface RealArenaOptions {
   initialCode?: Record<string, string>
   /** CPU 配额（默认 100）。 */
   cpu?: number
+  /** 席位 → spawn 固定坐标（M5/D3：arena 对称建号 base(25,25)/mirror(24,25)）。缺席随机。 */
+  spawnCoords?: Record<string, { x: number; y: number }>
   /** 日志回调（公平性重掷告警等）。 */
   log?: (msg: string) => void
+}
+
+/** arena-blitz 固定基准房（plan-M5 D3）：镜像 = 东邻 roomNameFromXY(x+1,y)。 */
+export const ARENA_BASE_ROOM = 'W15N15'
+export function arenaMirrorRoom(base = ARENA_BASE_ROOM): string {
+  const m = /^([WE])(\d+)([NS])(\d+)$/.exec(base)
+  if (!m) throw new Error(`invalid arena base room: ${base}`)
+  // 旧仓库 B3 推导：东邻 = x+1。W/E 方向 x 增减语义由引擎 roomNameFromXY 承担，
+  // 这里直接用 svc.system('arenaGen') 的返回值（base/mirror），此函数仅作守卫/展示。
+  return m[1] === 'W' ? `W${Number(m[2]) - 1}${m[3]}${m[4]}` : `E${Number(m[2]) + 1}${m[3]}${m[4]}`
 }
 
 /** 视野判定（负向测试的断言锚点）：owned rooms ∪ creep/建筑所在房间。 */
@@ -49,6 +61,12 @@ export class RealArena implements SeatRegistry, ArenaBackend {
    *  覆盖语义（先清库再生成，无 already-exists 拒绝），重掷只允许碰 ∉ 此集合的房间。 */
   private readonly generatedRooms = new Set<string>()
   private preparePromise: Promise<void> | undefined
+  /** arena 镜像房集合（M5/D3）+ 单飞 Promise：bindUser 据此等待战场就绪而不走 prepareRooms。 */
+  private readonly arenaRooms = new Set<string>()
+  private arenaPreparePromise: Promise<{ base: string; mirror: string; spawnA: { x: number; y: number }; spawnB: { x: number; y: number } }> | undefined
+  /** arena 镜像房 → 对称 spawn 坐标（prepareArena 按真实地形选定；bindUser 按房间自取，
+   *  不经调用方 setSpawnCoords——微任务时序下「先 await 后 set」会漏首席坐标）。 */
+  private readonly arenaSpawnCoords = new Map<string, { x: number; y: number }>()
 
   constructor(
     private readonly svc: ScreepsService,
@@ -137,6 +155,80 @@ export class RealArena implements SeatRegistry, ArenaBackend {
     return { ...this.opts.rooms }
   }
 
+  /**
+   * arena 镜像战场准备（M5/D3，plan-M5）：预清（removeRoom 回插全墙桩——R6/N5：复用
+   * 依赖 mod 的 removeWhere 清桩链）→ arenaGen 一次生成 base + 东邻镜像（对称地形/
+   * 资源/中立 controller，禁 NPC）→**登记 generatedRooms（B3 一审阻塞）**——否则后续
+   * 任何 world 局的 prepareRooms 会 stock-generate + 公平重掷覆盖镜像战场（mod
+   * generateRoom 是覆盖语义）。arenaGen 不走公平重掷（镜像即公平，distance 校验无意义）；
+   * 生成后 runner 地形缓存不刷新（S7a spike）→ restart（同 prepareRooms 语义）。
+   * 单飞（arenaPreparePromise）：createMatch 后台预热与 bindUser 的 ensureRoomReady
+   * 并发进入时共享同一次准备（waker 建号与 prepare 竞态防线）。
+   */
+  async prepareArena(): Promise<{
+    base: string
+    mirror: string
+    spawnA: { x: number; y: number }
+    spawnB: { x: number; y: number }
+  }> {
+    if (this.arenaPreparePromise) return this.arenaPreparePromise
+    // arenaRooms 必须在任何 await 之前同步登记：并发 bindUser 的 ensureRoomReady 据
+    // 此判定「等待本 Promise」而非误走 prepareRooms stock 路径（stub IT 竞态实证）
+    this.arenaRooms.add(ARENA_BASE_ROOM)
+    this.arenaRooms.add(arenaMirrorRoom(ARENA_BASE_ROOM))
+    this.arenaPreparePromise = this.doPrepareArena(ARENA_BASE_ROOM, arenaMirrorRoom(ARENA_BASE_ROOM)).finally(() => {
+      this.arenaPreparePromise = undefined
+    })
+    return this.arenaPreparePromise
+  }
+
+  private async doPrepareArena(
+    base: string,
+    mirror: string,
+  ): Promise<{ base: string; mirror: string; spawnA: { x: number; y: number }; spawnB: { x: number; y: number } }> {
+    // 先暂停世界（对齐旧仓库 M3 A 节「pause → arenaGen → 建号 → resume」防 flake 链）：
+    // 引擎在跑的几个 tick 内就会给新 accessible 的中立房派 Invader 殖民（实体占位，
+    // hasEntity=true 实证）→ 双席建号撞 already owned。整个准备+建号窗口世界保持暂停，
+    // 由 wireMachine 的 started 事件面统一 resume。
+    await this.svc.system('pause')
+    this.arenaRooms.add(base) // 先登记：bindUser 的 ensureRoomReady 据此等待本 Promise 而不走 prepareRooms
+    this.arenaRooms.add(mirror)
+    // 预清：removeRoom 幂等（不存在 found:false 安全）；把上一局的全墙桩/残骸清干净，
+    // arenaGen 的基准房生成链从干净状态开始（对照旧仓库「resetArena 每次 start 清场」语义）
+    await this.svc.system('removeRoom', base).catch(() => {})
+    await this.svc.system('removeRoom', mirror).catch(() => {})
+    const res = (await this.svc.system('arenaGen', { room: base, sources: 2 })) as { base?: string; mirror?: string }
+    // arenaRooms 登记终身保留：ensureRoomReady 依赖 generatedRooms（不再等待），
+    // bindUser 的 force 赋权依赖 arenaRooms（战场独占语义，见下）——删除会漏 force
+    this.generatedRooms.add(base) // B3：防任何后续 prepareRooms 覆盖镜像战场
+    this.generatedRooms.add(mirror)
+    // resume:false（M5 live 实测）：resumed 世界的中立镜像房会被引擎 Invader NPC 抢注
+    // controller（dump 实证 controller.user='2'）→ 第二席建号撞 'room already owned'。
+    // 保持 paused 直到双席建号完成，wireMachine 的 started 事件面显式 resume——
+    // paused 期间 gameTime 不走表，maxTicks 基线（started 时快照）不受影响。
+    await this.svc.restart({ resume: false })
+    // 对称 spawn 坐标：基于真实地形选点（[N2]：固定坐标落墙会被 placeSpawn 静默随机
+    // 重掷，破坏镜像对称——live IT 实证）。镜像 terrain = base 逐行反转 ⇒ base 侧
+    // (x,y) 非墙 ⇔ mirror 侧 (49-x,y) 非墙，扫一个双房同时非墙的对称对即可。
+    const terrain = (await this.svc.getTerrain([base])).terrain[base] ?? ''
+    let spawnA = { x: 25, y: 25 }
+    for (let y = 5; y < 45; y++) {
+      let found = false
+      for (let x = 5; x < 45; x++) {
+        if (terrain[y * 50 + x] !== '1') {
+          spawnA = { x, y }
+          found = true
+          break
+        }
+      }
+      if (found) break
+    }
+    const spawnB = { x: 49 - spawnA.x, y: spawnA.y }
+    this.arenaSpawnCoords.set(base, spawnA)
+    this.arenaSpawnCoords.set(mirror, spawnB)
+    return { base: res.base ?? base, mirror: res.mirror ?? mirror, spawnA, spawnB }
+  }
+
   /** journal 恢复路径（M2/S5 → M3/S2 语义）：恢复局房间已存在且已发展——灌入 generatedRooms
    *  （防新局重掷覆盖），不再有 roomsPrepared 全局标志。 */
   markRoomsPrepared(): void {
@@ -181,13 +273,20 @@ export class RealArena implements SeatRegistry, ArenaBackend {
   }
 
   /** host 侧落映射 + 私服建号（房间生成在 prepareRooms；此处 createUser + 映射落地）。
-   *  幂等：重复 bind 拒绝。username = agent_ + seatSlug（M2/S7 碰撞加固）。 */
-  async bindUser(seatId: string): Promise<{ id: string; username: string }> {
+   *  幂等：重复 bind 拒绝。username = agent_ + seatSlug（M2/S7 碰撞加固）。
+   *  code（M5/[N6]）：per-call 覆盖——内部 IT/调度链建号即注码（botCode）；缺席用
+   *  opts.initialCode（构造级全局）。 */
+  async bindUser(seatId: string, code?: Record<string, string>): Promise<{ id: string; username: string }> {
     const existing = this.users.get(seatId)
     if (existing) throw new Error(`seat ${seatId}: already bound to ${existing}`)
     const room = this.opts.rooms[seatId]
     if (!room) throw new Error(`seat ${seatId}: no room assigned (host-side mapping only)`)
-    if (!this.generatedRooms.has(room)) await this.prepareRooms() // 惰性兜底：建号前补齐该席房间
+    // 房间就绪三态（M5/D3）：已生成 → 直接建号；arena 镜像房 → 等 prepareArena 单飞；
+    // 其余 → prepareRooms 公平生成链（惰性兜底）。
+    if (!this.generatedRooms.has(room)) {
+      if (this.arenaRooms.has(room)) await this.arenaPreparePromise
+      else await this.prepareRooms()
+    }
     const username = `agent_${seatSlug(seatId)}`
     // 跨重启/跨容器幂等（compose 全链实测发现）：世界卷持久化后同名用户仍在世界库，
     // createUser 会 already exists——先查世界，在则收编映射不建号。
@@ -196,14 +295,26 @@ export class RealArena implements SeatRegistry, ArenaBackend {
       this.users.set(seatId, username)
       return { id: username, username }
     }
+    const effectiveCode = code ?? this.opts.initialCode
+    // arena 镜像房坐标由 prepareArena 注入（arenaSpawnCoords）；world 局走 opts.spawnCoords
+    const coord = this.arenaSpawnCoords.get(room) ?? this.opts.spawnCoords?.[seatId]
     const user = await this.svc.createUser({
       username,
       room,
-      ...(this.opts.initialCode ? { code: this.opts.initialCode } : {}),
+      ...(coord ? { x: coord.x, y: coord.y } : {}),
+      ...(effectiveCode ? { code: effectiveCode } : {}),
+      // M5：arena 镜像房是 host 独占战场（controller 上 NPC cronjob 殖民残留一律回收）
+      ...(this.arenaRooms.has(room) ? { force: true } : {}),
       cpu: this.opts.cpu ?? 100,
     })
     this.users.set(seatId, username)
     return user
+  }
+
+  /** M5/D3：arena 对称 spawn 坐标（createMatchInternal 在分配镜像房时设置）。 */
+  setSpawnCoords(seatId: string, coord: { x: number; y: number }): void {
+    if (!this.opts.spawnCoords) this.opts.spawnCoords = {}
+    this.opts.spawnCoords[seatId] = coord
   }
 
   /** journal 恢复路径（M2/S5）：灌回 seatId→username 映射（用户已存在于私服，不建号）。

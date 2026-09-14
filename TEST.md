@@ -103,6 +103,31 @@ OPENROUTER_API_KEY=mock SMOKE_BASE_URL=http://host.docker.internal:8901/v1 \
   prompt already in flight` 是驱动器串行唤醒的预期拒绝（starter 首发在途时 started 事件
   唤醒被拒，非致命，下轮 roundBreak 唤醒接上）。
 
+## 0.9 M5 arena-blitz（单房 1v1 快速歼灭，已实测 2026-09-14）
+
+M5 起：`preset: arena-blitz`（或锦标赛 `matchConfig:{form:'arena'}`）= 单房 1v1 镜像歼灭战：
+固定 W15N15 + 东邻镜像 W14N15（mod arenaGen 对称地形/资源/中立 controller，禁 NPC），
+对称 spawn 建号（坐标由 host 按真实地形选定并保证互为镜像），150ms tick × 2000 tick
+预算（约 5 分钟一局），Agent live 热更迭代（无周期暂停），歼灭/击杀分/预算结算。
+
+```sh
+# 直建（需 provider）：
+curl -s -X POST http://localhost:8787/api/matches -H 'content-type: application/json' \
+  -d '{"preset":"arena-blitz","players":[{"seatId":"a","username":"a"},{"seatId":"b","username":"b"}]}'
+# 锦标赛通道（matchConfig 透传）：
+curl -s -X POST http://localhost:8787/api/tournaments -H 'content-type: application/json' \
+  -d '{"name":"blitz","participants":[{"seatId":"a","username":"a"},{"seatId":"b","username":"b"}],"matchConfig":{"form":"arena"}}'
+```
+
+**Agent 实测记录（2026-09-14）**：单测 180/180；test:live 9/9（M5 增补：镜像对称+复用探针+
+真实 blitz 短局 51.6s 对称 draw）；m2-smoke 13 步全绿；compose 冒烟；**真实 LLM（qwen）
+验收局**：锦标赛通道建届 → 双 Agent 真写码提交（tool_end ×11，含 ERR 后自修重试）→ starter
+自动开局 → 150ms tick 真跑 → ticksExhausted 结算（za=100/zb=100 完美镜像 draw）→ 届终
++ 积分榜，errors=[]，teardown done。**房间池守卫**：`--rooms`/`ARENA_ROOMS` 含 W15N15/
+W14N15 启动即拒（arena 战场独占）。已知边界：混跑期 world 局 tick 被同步 150ms（全局单值
+tick 耦合，plan-M5 R7/n1）；genStrongholds NPC 要塞 cronjob（墙钟拍，不受世界暂停控制）
+殖民无主房 → createUser 的 force 通道回收（host 侧独占，LLM 不可达，公平边界负向测试钉住）。
+
 注：`.bashrc` 的 export 行被非交互早退守卫挡住，非交互 shell 里取用方法：
 `eval "$(grep -E '^export OPENROUTER_API_KEY=' ~/.bashrc)"`（只进当前进程环境，不落盘）。
 

@@ -95,13 +95,14 @@ function Lobby(props: {
       {actionError && <p style={{ color: '#e07070' }}>{actionError}</p>}
       <table cellPadding={4}>
         <thead>
-          <tr><th>id</th><th>phase</th><th>round</th><th>players</th><th>winner</th><th></th></tr>
+          <tr><th>id</th><th>phase</th><th>form</th><th>round</th><th>players</th><th>winner</th><th></th></tr>
         </thead>
         <tbody>
           {props.matches.map((m) => (
             <tr key={m.id}>
               <td>{m.id}</td>
               <td>{m.phase}</td>
+              <td>{m.config.form}</td>
               <td>{m.roundIndex}</td>
               <td>{m.players.map((p) => `${p.username}${p.ready ? '✓' : '…'}`).join(' vs ')}</td>
               <td>{m.winner?.kind === 'draw' ? 'draw' : m.winner?.kind === 'seat' ? m.winner.seatId : ''}</td>

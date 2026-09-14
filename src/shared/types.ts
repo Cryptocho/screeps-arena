@@ -14,7 +14,14 @@ export interface MatchView {
   id: string
   phase: 'creating' | 'running' | 'roundBreak' | 'settled'
   roundIndex: number
-  config: { seats: number; roundMs: number; roundBreakTimeoutMs: number; maxRounds: number }
+  config: {
+    seats: number
+    roundMs: number
+    roundBreakTimeoutMs: number
+    maxRounds: number
+    form: 'world' | 'arena'
+    maxTicks: number
+  }
   players: Array<{
     seatId: string
     username: string

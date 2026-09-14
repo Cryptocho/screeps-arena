@@ -40,6 +40,12 @@ export interface ScreepsServiceConfig {
   tickDuration?: number
   /** 就绪超时（首次启动要生成世界结构）。 */
   readyTimeoutMs?: number
+  /**
+   * 动态 tick 时长解析（M5/[N3]）：ensure 链每次（重）启动都 setTickDuration——
+   * 静态 config.tickDuration 会在 arena 局活跃期间私服重启后静默回默认。提供此钩子时
+   * ensure 用其返回值（form 感知：存在活跃 arena 局 → 150，否则 200）。
+   */
+  resolveTickDuration?: () => number
   /** 随包 mod 文件（arena-mod.cjs 由调用方注入——S2 平移后接线）。 */
   mods?: ServerModFile[]
   /** 安装超时（默认 20 分钟，native 编译慢）。 */
@@ -159,7 +165,10 @@ export class ScreepsService {
       // 22:06 测试超时挂起的根因，reference service.ts 同款注释）。
       const body = (await this.arenaFetchDirect('/api/arena/system', {
         method: 'POST',
-        body: JSON.stringify({ cmd: 'setTickDuration', value: this.config.tickDuration }),
+        body: JSON.stringify({
+          cmd: 'setTickDuration',
+          value: this.config.resolveTickDuration?.() ?? this.config.tickDuration,
+        }),
       })) as { ok?: boolean; error?: string }
       if (!body?.ok) {
         this.log('setTickDuration failed: %s', body?.error ?? 'unknown')
@@ -238,6 +247,9 @@ export class ScreepsService {
     gcl?: number
     x?: number
     y?: number
+    /** host 侧 Arena 战场专用（M5）：跳过 already-owned 检查（NPC cronjob 殖民残留）。
+     *  LLM 工具面无此通道（buildSeatTools schema 无身份/权限参数），公平边界不变。 */
+    force?: boolean
   }): Promise<{ id: string; username: string }> {
     const body = (await this.arenaFetch('/api/arena/users', {
       method: 'POST',

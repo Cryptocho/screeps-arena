@@ -87,6 +87,16 @@ export class TournamentScheduler {
     if (input.matchConfig?.seats !== undefined && input.matchConfig.seats !== 2) {
       throw new Error('tournament: matchConfig.seats is fixed to 2')
     }
+    // M5/D6：arena 锦标赛校验——参赛者强制 2（单房 1v1 镜像）；world 回合制字段与 arena
+    // 语义冲突时忽略并记 t.errors（可查面，不静默）
+    if (input.matchConfig?.form === 'arena' && input.participants.length !== 2) {
+      throw new Error('tournament: arena matchConfig requires exactly 2 participants')
+    }
+    const arenaConflictKeys = (['roundMs', 'roundBreakTimeoutMs', 'maxRounds'] as const).filter(
+      (k) => input.matchConfig?.[k] !== undefined,
+    )
+    const arenaConflicts =
+      input.matchConfig?.form === 'arena' && arenaConflictKeys.length > 0 ? arenaConflictKeys : []
     const pairs = roundRobinPairs(seatIds)
     const t: Tournament = {
       id: newTournamentId(),
@@ -97,6 +107,10 @@ export class TournamentScheduler {
       ...(input.matchConfig ? { matchConfig: { ...input.matchConfig } } : {}),
       matches: pairs.map((pair) => ({ pair, status: 'scheduled' as const })),
       errors: [],
+    }
+    if (arenaConflicts.length > 0 && t.matchConfig) {
+      for (const k of arenaConflicts) delete t.matchConfig[k]
+      t.errors.push(`arena matchConfig: ignored round-based fields (${arenaConflicts.join(', ')}) — arena has no round pauses`)
     }
     this.deps.store.save(t)
     this.deps.log(`tournament ${t.id} created (${t.participants.length} players, ${t.matches.length} matches)`)

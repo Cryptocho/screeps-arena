@@ -1,8 +1,9 @@
 'use strict'
 /**
  * screeps-arena mod — 跑在 Screeps 私服 backend 进程内的控制面。
- * 平移自 reference/screeps-mod/arena-mod.cjs（M1/S2），裁剪：replay bridge（M4）、
- * arenaGen/arenaProbe 镜像克隆（M3）。保留全部防 flake 修复链（m0-flake §二）：
+ * 平移自 reference/screeps-mod/arena-mod.cjs，裁剪：replay bridge（M4 旧仓）、
+ * 路由层（本仓走 svc.system 面）；M5/S1 回迁 arenaGen/arenaProbe 镜像克隆。
+ * 保留全部防 flake 修复链（m0-flake §二）：
  * addWalledNeighbors / removeWhere 清桩 / resume 强刷 world meta / unhandledRejection
  * 守卫 / addAccessibleRoom / roomStatusData 播种 / users.code timestamp。
  *
@@ -340,7 +341,17 @@
     return db['rooms.objects'].findOne({ $and: [{ room: roomName }, { type: 'controller' }] })
       .then(function (controller) {
         if (!controller) throw 'room controller not found in ' + roomName + ' (generate the room first)'
-        if (controller.user) throw 'room ' + roomName + ' is already owned'
+        if (controller.user && !opts.force) {
+          // M5 live 实测：无主 accessible 房会被 backend 墙钟 cronjob（genStrongholds/
+          // genInvaders，不受 MAIN_LOOP_PAUSED 影响）殖民——invaderCore + controller
+          // 归 Invader（user='2'）→ 建号撞 already owned。
+          // 判据（实体占位）：房内有该 user 的 spawn/creep 才算真冲突（维持拒绝）；
+          // 仅 controller/invaderCore/rampart 归属（无玩家单位实体）= NPC 占位，清掉重赋权。
+          // force=true（host 侧 Arena 战场专用，svc.createUser 透传，LLM 不可达）直接赋权。
+          var hasEntity = db['rooms.objects']
+            .findOne({ $and: [{ room: roomName }, { user: controller.user }, { type: { $in: ['spawn', 'creep'] } }] })
+          if (hasEntity) throw 'room ' + roomName + ' is already owned'
+        }
         // [M2 fix] 兜底：launch.it 之后 m2-battle 重跑同一房名时，stock generateRoom
         // 会从 db.rooms[room].reservedBy 拷贝 user 字段到 controller.user（即便 db.rooms
         // 被 resetArena clear 过，但 run-loop 中 placeSpawn/reserve 又会写回）。
@@ -949,6 +960,129 @@
         return common.storage.resetAllData().then(function () { return ensureRoomStatusData() }).then(function () { return { reset: true } })
       case 'resetArena':
         return resetArena()
+      case 'arenaGen': {
+        // M5/S1 回迁（reference/screeps-mod/arena-mod.cjs arenaGen 原样）：镜像克隆
+        // （基准房 + 东邻镜像房），生成双方对称地形/资源/中立 controller。
+        // 参数透传：terrainType/sources/mineral/exits 全透传。基准房 exits.right 开向
+        // 东邻镜像（B3：镜像=东邻，roomNameFromXY(x+1,y)；示例 W15N15 → W14N15）；
+        // 水平翻转下 base right ↔ mirror left、y 坐标不变 → 出口格天然对称，exits 登记
+        // 钉死不写 db.rooms 字段（引擎 interRoom 只读边界格 terrain）。
+        if (!value || typeof value.room !== 'string' || !/^[WE]\d+[NS]\d+$/.test(value.room)) {
+          return Promise.reject('arenaGen requires {room, terrainType?, sources?, mineral?, exits?}')
+        }
+        var aBase = value.room
+        var baseXY = common.roomNameToXY(aBase)
+        var aMirror = common.getRoomNameFromXY(baseXY[0] + 1, baseXY[1])
+        var aGenOpts = {}
+        if (typeof value.terrainType === 'string') aGenOpts.terrainType = value.terrainType
+        if (typeof value.sources === 'number') aGenOpts.sources = value.sources
+        if (typeof value.mineral === 'string') aGenOpts.mineral = value.mineral
+        // controller:true 供后续 pre-assign（保留 controller + placeSpawn 标准赋权）；
+        // keeperLairs:false 禁 NPC（禁 Invader/Source Keeper，Arena 短局无骚扰）
+        aGenOpts.controller = true
+        aGenOpts.keeperLairs = false
+        var aRightY = value.exits && Array.isArray(value.exits.right) ? value.exits.right : [24, 25]
+        aGenOpts.exits = { right: aRightY }
+
+        return Promise.resolve()
+          // 1) 基准房：同 generateRoom 清桩链（邻房已生成时 ring stub 可能占位，先清）
+          .then(function () { return db['rooms.terrain'].removeWhere({ room: aBase }) })
+          .then(function () {
+            return db['rooms.objects'].removeWhere({ room: aBase }).then(function () {
+              return db.rooms.removeWhere({ _id: aBase })
+            })
+          })
+          // M5 复用修复（live IT 实测「Exits in room W14N15 don't match」）：镜像房若残留
+          // 上一局的墙桩/db 登记，stock generateRoom 的 exits 校验会对邻房老地形校验失败
+          // ——镜像房三集合先清干净（无桩），arenaGen 从干净状态开始。
+          .then(function () { return db['rooms.terrain'].removeWhere({ room: aMirror }) })
+          .then(function () {
+            // NPC 要塞残留（genStrongholds cronjob 墙钟拍不受暂停影响）：invaderCore/rampart 全清
+            return db['rooms.objects'].removeWhere({ $and: [{ room: aMirror }, { type: { $in: ['invaderCore', 'rampart'] } }] })
+          })
+          .then(function () { return db['rooms.objects'].removeWhere({ room: aMirror }) })
+          .then(function () { return db.rooms.removeWhere({ _id: aMirror }) })
+          .then(function () { return d.cliMap.generateRoom(aBase, aGenOpts) })
+          .then(function (r) { return addWalledNeighbors(aBase).then(function () { return r }) })
+          .then(function (r) { return d.cliMap.updateTerrainData().then(function () { return r }) })
+          .then(function (r) { return addAccessibleRoom(aBase).then(function () { return r }) })
+          // 2) 镜像房：清桩 → 反转地形 → 登记 db.rooms → 复制 objects → 邻桩 → 重建 blob → 入 accessible
+          .then(function () {
+            // 基准房的 addWalledNeighbors 已给镜像房插全墙桩（当时镜像不存在），必须先清
+            return db['rooms.terrain'].removeWhere({ room: aMirror })
+          })
+          .then(function () { return db['rooms.terrain'].findOne({ room: aBase }) })
+          .then(function (baseTerrain) {
+            if (!baseTerrain) throw 'base terrain missing for ' + aBase
+            return db['rooms.terrain'].insert({ room: aMirror, terrain: reverseTerrain(baseTerrain.terrain) })
+          })
+          .then(function () {
+            // 登记（B1/B4：updateTerrainData 以 db.rooms + db['rooms.terrain'] 为准 deflate）
+            return db.rooms.insert({ _id: aMirror, status: 'normal', sourceKeepers: false })
+          })
+          .then(function () {
+            return db['rooms.objects'].find({ room: aBase }).then(function (objects) {
+              return Promise.all(
+                objects
+                  .filter(function (o) { return o.type === 'source' || o.type === 'mineral' || o.type === 'controller' })
+                  .map(function (o) {
+                    var copy = {}
+                    for (var k in o) {
+                      if (Object.prototype.hasOwnProperty.call(o, k) && k !== '_id' && k !== '$loki') copy[k] = o[k]
+                    }
+                    copy.room = aMirror
+                    copy.x = 49 - o.x // 水平翻转：x'=49-x，y 不变
+                    if (o.type === 'controller') {
+                      // 钉死：镜像 controller = 中立副本（user:null、level:0、无状态字段），
+                      // 与 source 同路径；两侧各属一方由 createUser→placeSpawn 预赋权完成
+                      // （无中立 controller 可 claim → 禁扩张天然达成）
+                      copy.user = null
+                      copy.level = 0
+                      copy.progress = 0
+                      if (copy.reservation !== undefined) { copy.reservation = undefined; delete copy.reservation }
+                      if (copy.downgradeTime !== undefined) { copy.downgradeTime = undefined; delete copy.downgradeTime }
+                      if (copy.safeMode !== undefined) { copy.safeMode = undefined; delete copy.safeMode }
+                      if (copy.nextDowngradeTime !== undefined) { copy.nextDowngradeTime = undefined; delete copy.nextDowngradeTime }
+                    }
+                    return db['rooms.objects'].insert(copy)
+                  }),
+              )
+            })
+          })
+          // B4：addWalledNeighbors(镜像) 必须早于 updateTerrainData（官方链顺序 L718-721）——
+          // 新插斜角桩必须先进 blob，否则 restart 后 runner 缺斜角房 "Could not load terrain data"
+          .then(function () { return addWalledNeighbors(aMirror) })
+          .then(function (r) { return d.cliMap.updateTerrainData().then(function () { return r }) })
+          .then(function (r) { return addAccessibleRoom(aMirror).then(function () { return r }) })
+          .then(function () { return { base: aBase, mirror: aMirror, exits: { right: aRightY } } })
+      }
+      case 'arenaProbe': {
+        // M5/S1 回迁（reference mod 原样）契约探针：返回 base/mirror 两房 terrain 编码串 +
+        // 对称对象坐标（source/mineral/controller），供 IT 断言「镜像 terrain = 基准逐行
+        // 反转」「objects 坐标 x'=49-x」。只读探针，不改变任何状态。
+        if (!value || typeof value.base !== 'string' || typeof value.mirror !== 'string') {
+          return Promise.reject('arenaProbe requires {base, mirror}')
+        }
+        var aReadTerrain = function (room) {
+          return db['rooms.terrain'].findOne({ room: room }).then(function (t) {
+            return t ? t.terrain : null
+          })
+        }
+        var aReadObjects = function (room) {
+          return db['rooms.objects'].find({ room: room }).then(function (objects) {
+            return objects
+              .filter(function (o) { return o.type === 'source' || o.type === 'mineral' || o.type === 'controller' })
+              .map(function (o) {
+                return { type: o.type, x: o.x, y: o.y, room: o.room, user: o.user || null, level: o.level || 0 }
+              })
+              .sort(function (a, b) { return a.type.localeCompare(b.type) || a.x - b.x || a.y - b.y })
+          })
+        }
+        return Promise.all([aReadTerrain(value.base), aReadTerrain(value.mirror), aReadObjects(value.base), aReadObjects(value.mirror)])
+          .then(function (r) {
+            return { base: { room: value.base, terrain: r[0], objects: r[2] }, mirror: { room: value.mirror, terrain: r[1], objects: r[3] } }
+          })
+      }
       case 'removeUser':
         return removeUser(value)
       case 'removeRoom':

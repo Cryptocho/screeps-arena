@@ -324,12 +324,19 @@ describe('arena mod（S2 打表）', () => {
     expect(res2.body?.events).toHaveLength(1)
   })
 
-  it('裁剪面：replay*/arenaGen/arenaProbe 已删（unknown command 拒绝）', async () => {
-    for (const cmd of ['replayStart', 'replayPage', 'replayStop', 'replayStatus', 'arenaGen', 'arenaProbe']) {
+  it('裁剪面：replay* 已删（unknown command 拒绝）；M5/S1 回迁后 arenaGen/arenaProbe 已在（参数校验拒绝）', async () => {
+    for (const cmd of ['replayStart', 'replayPage', 'replayStop', 'replayStatus']) {
       const res = await systemCmd(bundle, cmd, {})
       expect(res.body?.ok, cmd).toBe(false)
       expect(res.body?.error, cmd).toContain('unknown system command')
     }
+    // M5/S1：arenaGen/arenaProbe 回迁（plan-M5 D2）——空参走各自的参数校验拒绝而非 unknown
+    const g = await systemCmd(bundle, 'arenaGen', {})
+    expect(g.body?.ok, 'arenaGen').toBe(false)
+    expect(g.body?.error, 'arenaGen').toContain('arenaGen requires')
+    const p = await systemCmd(bundle, 'arenaProbe', {})
+    expect(p.body?.ok, 'arenaProbe').toBe(false)
+    expect(p.body?.error, 'arenaProbe').toContain('arenaProbe requires')
   })
 
   it('保留命令：setTickDuration / pause / resetArena 可用', async () => {

@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { MatchJournal } from '../src/server/match/journal.js'
+import { DEFAULT_MATCH_CONFIG } from '../src/server/match/model.js'
 import type { MatchJournalRecord } from '../src/server/match/journal.js'
 import { MatchMachine } from '../src/server/match/machine.js'
 
@@ -25,7 +26,7 @@ function newJournal(): MatchJournal {
 function record(overrides: Partial<MatchJournalRecord> = {}): MatchJournalRecord {
   return {
     id: 'mtest1',
-    config: { seats: 2, roundMs: 60_000, roundBreakTimeoutMs: 300_000, maxRounds: 8 },
+    config: { ...DEFAULT_MATCH_CONFIG },
     players: [
       { seatId: 'a', username: 'ua', ready: false, code: { main: 'module.exports.loop=function(){}' } },
       { seatId: 'b', username: 'ub', ready: false },

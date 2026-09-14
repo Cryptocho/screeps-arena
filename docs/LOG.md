@@ -1,5 +1,52 @@
 # 工程日志（倒序）
 
+## 2026-09-14 M5 arena-blitz：实施 + 全链实测 + 5 bug 修复（成果审查待做）
+
+**实施（plan-M5 v2 S0–S6）**：D1 preset/form 数据模型（PRESETS 表 + configFromPreset，
+DEFAULT 回归 world/0）；D2 mod 回迁 arenaGen/arenaProbe（预清链 + 镜像房三集合清理 +
+invaderCore/rampart 残留清除）；D3 prepareArena 单飞（pause → arenaGen → generatedRooms
+登记（B3）→ restart resume:false，对称坐标按真实地形选定存实例）；D4 arena 语义
+（running 热更 / advance no-op / seatBackendFor [N8] 扩展 / 30s 状态唤醒 / 无 provider
+拒建）；D5 归因器回迁 + KillLedger（观察游标 host 独立 n2）+ arenaSettleDecision/
+ticksExhaustedDecision + driver arenaObserve 分支（B2 新增件）+ bound:false 溢出警告
+[N4]；D6 HTTP preset + botCode 剥除 + 锦标赛 arena 校验 + ARENA_MODEL→maxTicks 预设
+基底合并。测试：m5-model 9 + m5-arena 13 + m5-arena-stub IT 1 + live M5 段 2。
+
+**验证基线（全部本机实测）**：`npm test` **180/180 绿**（30 文件）+ typecheck/build 零错；
+`test:live` **9/9 绿**（M5 增补：镜像对称+复用探针 22.8s、真实 blitz 短局 51.6s——
+botCode 双席对撞，ticksExhausted 103:103 完美对称 draw）；m2-smoke 13 步全绿；compose
+冒烟绿；**真实 LLM（qwen/qwen3.7-flash）验收局**：锦标赛 matchConfig:{form:'arena'} 通道
+→ maxTicks=2000 生效 → 双 Agent 真写码提交（tool_end ×11，含 ERR 自修重试）→ starter
+自动开局 → 150ms tick 真跑 → ticksExhausted 结算（za=100/zb=100 完美镜像 draw）→ 届终
++ 积分榜，errors=[]，teardown done。
+
+**本轮修复的关键 bug**（均由真实链路暴露）：
+1. **NPC 要塞殖民**：无主 accessible 房被 backend 墙钟 cronjob（genStrongholds/
+   genInvaders，每 5-15 分钟墙钟拍，**不受 MAIN_LOOP_PAUSED 影响**）殖民——invaderCore
+   + rampart + controller 归 Invader（user='2'）→ 双席建号撞 already owned。三层修复：
+   realCreateUser 加 force 通道（host 侧 Arena 战场专用，svc.createUser 透传，LLM 工具
+   面无此通道——公平边界负向测试钉住）+ arenaGen 预清 invaderCore/rampart +
+   prepareArena 先 pause（准备+建号窗口世界暂停，wireMachine started 统一 resume）。
+   取证链：backend.log「controller.user='2' hasEntity=true」→ invaderCore 实体 dump。
+2. **[N2] 固定对称坐标落墙**：(25,25)/(24,25) 在某次生成的地形里落墙 → placeSpawn
+   静默随机重掷 → spawn 不再镜像（live IT 实证 33≠19）。修复：prepareArena 读真实
+   terrain 选双房同时非墙的对称对（镜像逐行反转 ⇒ base 非墙 ⇔ mirror (49-x,y) 非墙）。
+3. **锦标赛 matchConfig 直传丢预设**：`matchConfig:{form:'arena'}` 展开后 maxTicks=0
+   （DEFAULT 基底）→ blitz 无 tick 预算。修复：form=arena 无 preset 时以
+   PRESETS['arena-blitz'] 为基底合并。
+4. **arenaGen 复用撞 "Exits don't match"**：上局镜像房墙桩/db 登记残留 → stock
+   generateRoom exits 校验失败。修复：mod arenaGen 预清镜像房 terrain/objects/rooms。
+5. **prepareArena × bindUser 并发竞态**：arenaRooms 延迟登记导致并发 bindUser 误走
+   prepareRooms（生成镜像房覆盖域）；.then setSpawnCoords 微任务时序漏首席坐标。
+   修复：arenaRooms 同步登记（任何 await 之前）+ 终身保留（force 语义依赖）+
+   坐标存实例 arenaSpawnCoords 由 bindUser 按房间自取。
+
+**伴生**：dbg 探针（scripts/dbg-arena-owned.ts，保留现场取证）； Loki findOne 投影
+异常（username/_id undefined，backend.log 取证）——归因判据改实体占位（spawn/creep
+实体存在才算真冲突），不依赖 users 表查询。
+
+**遗留**：混跑期 world 局 tick 被同步 150ms（R7/n1 已知行为）；成果审查循环待做。
+
 ## 2026-09-14 真实 LLM 锦标赛全程实测（qwen/qwen3.7-flash，自然打满 8 周期）+ 默认模型切换
 
 **默认模型切换（用户拍板）**：`xiaomi/mimo-v2.5` → `qwen/qwen3.7-flash`，此后所有真实

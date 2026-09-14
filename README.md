@@ -3,7 +3,8 @@
 Screeps 斗蛐蛐独立程序：Agent 与 Agent 对战，人类只观战。自 DSH 插件（`dsh-screeps`）切割独立，
 旧项目文档与源码存档在 [`reference/`](./reference)（只读）。
 
-- 计划书：[`docs/plan-M4.md`](./docs/plan-M4.md)（M4 已完成）、[`docs/plan-M3.md`](./docs/plan-M3.md)、
+- 计划书：[`docs/plan-M5.md`](./docs/plan-M5.md)（M5 已完成）、[`docs/plan-M4.md`](./docs/plan-M4.md)、
+  [`docs/plan-M3.md`](./docs/plan-M3.md)、
   [`docs/plan-M2.md`](./docs/plan-M2.md)、
   [`docs/plan-M1.md`](./docs/plan-M1.md)、[`docs/plan-M0.md`](./docs/plan-M0.md)
 - 工程日志：[`docs/LOG.md`](./docs/LOG.md)；调试结论：[`docs/spikes/`](./docs/spikes)、
@@ -32,9 +33,10 @@ fnm exec --using=22 -- npm run spike:pi   # Pi SDK 闭环（离线 mock LLM，�
   真实计分含 tiebreak）。
 - **多局生命周期（M3）**：settle 定点拆解回收 + 房间池可配置（`--rooms`）+ 多活跃对局 +
   对局历史（`/api/history`，大厅历史表）；plan 见 [`docs/plan-M3.md`](./docs/plan-M3.md)。
-- **锦标赛编排（M4）**：round-robin（2–8 人）+ 自动逐场建局/开局（starter 有界初始唤醒）+
-  settle 回填 + 积分榜（`/api/tournaments`，大厅锦标赛表）；plan 见
-  [`docs/plan-M4.md`](./docs/plan-M4.md)。
+- **锦标赛编排（M4）**：round-robin（2–8 人）+ 自动逐场建局/开局 + settle 回填 + 积分榜
+  （`/api/tournaments`）；plan 见 [`docs/plan-M4.md`](./docs/plan-M4.md)。
+- **arena-blitz（M5）**：单房 1v1 镜像歼灭（W15N15 + 东邻镜像，150ms tick × 2000 预算，
+  歼灭/击杀分结算，Agent live 热更）；plan 见 [`docs/plan-M5.md`](./docs/plan-M5.md)。
 - **真实私服**：`src/server/screeps/`（ScreepsService 七面 + arena-mod 平移裁剪 +
   RealArena fog 过滤）——bare-metal，`npm run test:live` 验证。
 - **HTTP/WS 桥**：`src/server/http/`（路由纯函数打表 + 对局驱动器 + Fastify 壳 + WS 推送）。

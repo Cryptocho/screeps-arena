@@ -13,12 +13,17 @@ import { computeOutcome } from '../match/score.js'
 import type { SeatScoreInput } from '../match/score.js'
 import { standings } from '../tournament/bracket.js'
 import type { Tournament, TournamentParticipant } from '../tournament/types.js'
+import type { MatchPreset } from '../match/model.js'
 
 /** 桥需要的服务面（结构化最小接口）。 */
 export interface ArenaHttpServices {
   matches(): MatchMachine[]
   match(id: string): MatchMachine | undefined
-  createMatch(input: { config?: Partial<MatchConfig>; players: Array<{ seatId: string; username: string }> }): MatchMachine
+  createMatch(input: {
+    config?: Partial<MatchConfig>
+    preset?: MatchPreset
+    players: Array<{ seatId: string; username: string }>
+  }): MatchMachine
   getWorld(): Promise<unknown>
   getTerrain(rooms: string[]): Promise<{ terrain: Record<string, string> }>
   /** 逐用户 console 增量（游标由服务层维护）。 */
@@ -104,7 +109,17 @@ export async function handleArenaRequest(services: ArenaHttpServices, req: Arena
     if (method === 'POST') {
       const body = (req.body ?? {}) as {
         config?: Partial<MatchConfig>
+        preset?: string
         players?: Array<{ seatId: string; username: string }>
+      }
+      // M5 公平红线：botCode 只存在于 server 内部链（IT/调度）——HTTP 层显式剥除 + 拒绝
+      if (body && typeof body === 'object' && 'botCode' in body) {
+        return bad(400, 'botCode is not accepted via HTTP (internal channel only)')
+      }
+      let preset: MatchPreset | undefined
+      if (body.preset !== undefined) {
+        if (body.preset !== 'arena-blitz' && body.preset !== 'world-rounds') return bad(400, `unknown preset: ${String(body.preset)}`)
+        preset = body.preset
       }
       if (!Array.isArray(body.players) || body.players.length === 0) {
         return bad(400, 'players required (array of {seatId, username})')
@@ -114,7 +129,11 @@ export async function handleArenaRequest(services: ArenaHttpServices, req: Arena
         if (typeof p.username !== 'string' || !USERNAME_RE.test(p.username)) return bad(400, `invalid username: ${String(p.username)}`)
       }
       try {
-        const m = services.createMatch({ ...(body.config ? { config: body.config } : {}), players: body.players })
+        const m = services.createMatch({
+          ...(body.config ? { config: body.config } : {}),
+          ...(preset ? { preset } : {}),
+          players: body.players,
+        })
         return { status: 201, json: matchView(m) }
       } catch (err) {
         return bad(400, String(err instanceof Error ? err.message : err))

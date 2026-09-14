@@ -69,7 +69,10 @@ export class MatchMachine {
     return this.state.phase
   }
 
-  /** 席位提交（三工具 submit_code 的落点；phase 语义在此收口）。 */
+  /** 席位提交（三工具 submit_code 的落点；phase 语义在此收口）。
+   *  M5/D4：form=arena 的 running 期 = live 热更（引擎下一 tick 生效）——更新
+   *  code/submittedAt（journal 复盘用），不触发 ready/roundBreak 语义；
+   *  world-rounds 维持 FROZEN_DURING_ROUND 拒绝（负向测试钉住）。 */
   submitCode(seatId: string, modules: Record<string, string>, now = Date.now()): void {
     const player = this.requireSeat(seatId)
     switch (this.state.phase) {
@@ -80,7 +83,13 @@ export class MatchMachine {
         player.submittedAt = now
         break
       case 'running':
-        throw new Error(FROZEN_DURING_ROUND)
+        if (this.config.form === 'arena') {
+          player.code = { ...modules }
+          player.submittedAt = now // 热更：不动 ready（arena 无 roundBreak 语义）
+        } else {
+          throw new Error(FROZEN_DURING_ROUND)
+        }
+        break
       case 'settled':
         throw new Error(`submit_code rejected: match ${this.id} already settled`)
     }
@@ -100,8 +109,11 @@ export class MatchMachine {
   }
 
   /** 时钟驱动：running 周期到点 → roundBreak；roundBreak 超时/全员就绪 → resume。幂等。
-   *  scores（M2/S1）透传 resume → roundsExhausted settle；缺席维持 M0 全 0 draw。 */
+   *  scores（M2/S1）透传 resume → roundsExhausted settle；缺席维持 M0 全 0 draw。
+   *  M5/D4：form=arena 无周期暂停（无 roundBreak）——advance 仅作 no-op（tick 预算
+   *  由 driver 结算观察负责，D5）。 */
   advance(now = Date.now(), scores?: { scores: Record<string, number>; winner: WinnerRef }): void {
+    if (this.config.form === 'arena') return
     if (this.state.phase === 'running' && this.state.roundStartedAt !== undefined) {
       if (now - this.state.roundStartedAt >= this.config.roundMs) {
         this.enterRoundBreak(now)

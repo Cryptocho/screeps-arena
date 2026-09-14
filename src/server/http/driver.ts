@@ -13,12 +13,16 @@
 import type { MatchMachine, MatchEvent } from '../match/machine.js'
 import { computeOutcome } from '../match/score.js'
 import type { SeatScoreInput } from '../match/score.js'
-import type { WinnerRef } from '../match/model.js'
+import type { SettleReason, WinnerRef } from '../match/model.js'
 
 /** 唤醒通道（AgentRunner.prompt 的结构化最小面）。 */
 export interface SeatWaker {
   prompt(seatId: string, text: string): Promise<void>
 }
+
+/** arena 局 30s 状态唤醒文本（D4：pull report，零跨局信息——与 report 工具增量面配合）。 */
+export const ARENA_STATUS_WAKE_TEXT =
+  'Arena match in progress. Check your situation with the report tool and hot-update your code with submit_code if needed (changes take effect at the next tick). The match ends when a spawn is destroyed or the tick budget runs out.'
 
 export interface MatchDriverOptions {
   /** 检查周期（ms，默认 500）。 */
@@ -31,6 +35,13 @@ export interface MatchDriverOptions {
    * 缺席/抛错 → advance 不带分（M0 全 0 draw），驱动循环不中断。
    */
   scoreSnapshot?: (m: MatchMachine) => Promise<Record<string, SeatScoreInput> | undefined>
+  /**
+   * arena 结算观察（M5/D5，B2 新增件）：form=arena 的 running 局每拍调用一次；返回
+   * 决策则立即 settle（lastStanding / ticksExhausted）。抛错只记日志不中断循环。
+   */
+  arenaObserve?: (m: MatchMachine) => Promise<{ reason: SettleReason; outcome: { scores: Record<string, number>; winner: WinnerRef } } | undefined>
+  /** arena 局状态唤醒周期（墙钟 ms，默认 30_000——D4：低频状态唤醒，不追 tick）。 */
+  arenaStatusWakeMs?: number
   log?: (msg: string) => void
 }
 
@@ -43,6 +54,10 @@ export class MatchDriver {
   private readonly intervalMs: number
   private readonly wakeText: NonNullable<MatchDriverOptions['wakeText']>
   private readonly scoreSnapshot: MatchDriverOptions['scoreSnapshot']
+  private readonly arenaObserve: MatchDriverOptions['arenaObserve']
+  private readonly arenaStatusWakeMs: number
+  /** matchId → 上次 arena 状态唤醒墙钟（D4 节流）。 */
+  private readonly arenaLastWake = new Map<string, number>()
   private readonly log: (msg: string) => void
 
   constructor(opts: MatchDriverOptions = {}) {
@@ -61,6 +76,8 @@ export class MatchDriver {
         return `Match ${m.id}: round ${round} is starting. Your code is live — play the round.`
       })
     this.scoreSnapshot = opts.scoreSnapshot
+    this.arenaObserve = opts.arenaObserve
+    this.arenaStatusWakeMs = opts.arenaStatusWakeMs ?? 30_000
     this.log = opts.log ?? (() => {})
   }
 
@@ -97,7 +114,8 @@ export class MatchDriver {
     }
   }
 
-  /** 单拍（测试口）：advance 全部对局（roundBreak 相位先取计分快照）+ 消费事件唤醒。 */
+  /** 单拍（测试口）：advance 全部对局（roundBreak 相位先取计分快照）+ arena 结算观察
+   *  + 状态唤醒节流 + 消费事件唤醒。 */
   async tick(): Promise<void> {
     for (const m of this.machines) {
       try {
@@ -113,6 +131,34 @@ export class MatchDriver {
         m.advance(undefined, outcome)
       } catch (err) {
         this.log(`advance ${m.id} failed: ${String(err)}`)
+      }
+      // M5/D5：arena 局结算观察（form 分支隔离——world 局不进此路径）
+      if (m.config.form === 'arena' && m.phase === 'running' && this.arenaObserve) {
+        try {
+          const decision = await this.arenaObserve(m)
+          if (decision) {
+            m.settle(decision.reason, Date.now(), decision.outcome)
+            continue
+          }
+        } catch (err) {
+          this.log(`arena observe ${m.id} failed: ${String(err)}`)
+        }
+        // D4：状态唤醒节流（30s 墙钟；串行守卫在途拒绝，非致命）
+        const now = Date.now()
+        const last = this.arenaLastWake.get(m.id) ?? now
+        if (now - last >= this.arenaStatusWakeMs) {
+          this.arenaLastWake.set(m.id, now)
+          const table = this.wakers.get(m.id)
+          for (const p of m.players) {
+            const waker = table?.get(p.seatId)
+            if (!waker) continue
+            try {
+              await waker.prompt(p.seatId, ARENA_STATUS_WAKE_TEXT)
+            } catch (err) {
+              this.log(`arena status wake ${p.seatId} failed: ${String(err)}`)
+            }
+          }
+        }
       }
     }
   }

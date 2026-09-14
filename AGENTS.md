@@ -2,28 +2,41 @@
 
 Screeps 斗蛐蛐独立程序：**对局参与者只能是 Agent（LLM 会话）**，多个 Agent 各自提交代码，在同一世界里对抗；人类只有旁观视角（大厅/地图/console 流），不进对局、不指挥、不参与。本仓库自 `dsh-screeps`（DSH 插件）切割独立，旧仓库全部重要文档与源码存档于 `reference/`（**只读参考，不参与构建**）。
 
-## 当前状态（2026-09-13）
+## 当前状态（2026-09-14）
 
-- **M0–M4 全部完成关闭**：M4（锦标赛编排，plan-M4 v3 审查闭环 PASS）已实施完毕——
-  round-robin 配对轮转（circle method，奇数 bye）、逐场状态机 scheduled→created→settled、
-  pump 单飞（建局触发点：建届/wireMachine settled/30s 兜底定时器）、启动恢复三态
-  （settled 未回填→history 按 matchId 回填；created 失联→查 history 后重排；scheduled→
-  journal/history pair 采纳优先，否则重排）、开局驱动（starter 5s 轮询 + 有界初始唤醒
-  3 次/席，在途 prompt 不重发不耗配额，超界落届 errors 可查面）、积分榜
+- **M0–M5 全部完成关闭**：M5（arena-blitz，plan-M5 v2 复审 PASS）已实施完毕——
+  单房 1v1 镜像歼灭（mod arenaGen/arenaProbe 回迁：W15N15 + 东邻镜像对称生成，禁 NPC）、
+  preset/form 数据模型（PRESETS 表 + configFromPreset，锦标赛 matchConfig 直传吃 arena
+  预设基底）、对称 spawn 建号（host 按真实地形选互为镜像的坐标——固定坐标落墙会被
+  placeSpawn 静默重掷，live IT 实证）、150ms tick × 2000 预算（ensure 链 form 感知 +
+  started 显式 set + resume；prepareArena 后世界 paused 防竞态）、Agent live 热更
+  （arena running 期 submitCode 放宽 + machine 登记 [N8]；world FROZEN 负向钉住）、
+  结算（归因器回迁 + KillLedger + lastStanding/ticksExhausted 决策 + bound:false 溢出
+  警告）、房间池冲突启动守卫、HTTP botCode 剥除负向（公平红线）、前端 form 标签。
+- **M5 验证基线（全部实测）**：`npm test` **180/180 绿**（30 文件）+ typecheck/build 零错；
+  `test:live` **9/9 绿**（M5 增补：镜像对称+复用探针 22.8s + 真实 blitz 短局 51.6s
+  对称 draw）；m2-smoke 13 步全绿；compose 冒烟绿；**真实 LLM（qwen）验收局**：锦标赛
+  通道 → 双 Agent 真写码（tool_end ×11）→ 自动开局 → ticksExhausted 结算（100:100
+  完美镜像 draw）→ 届终 + 积分榜，errors=[]，teardown done。
+- **M5 期间修复的关键 bug**（真实链路暴露）：① 无主 accessible 房被 backend 墙钟
+  cronjob（genStrongholds/genInvaders，不受 MAIN_LOOP_PAUSED 控制）殖民——invaderCore
+  + controller 归 Invader → 第二席建号撞 already owned。修复：createUser force 通道
+  （host 侧 Arena 战场专用，LLM 不可达）+ arenaGen 清 invaderCore/rampart 残留 +
+  prepareArena 先 pause（准备+建号窗口世界暂停，started 统一 resume）。② [N2] 固定
+  对称坐标落墙被 placeSpawn 静默随机重掷破坏对称 → prepareArena 按真实地形选互为镜像
+  的非墙对。③ 锦标赛 matchConfig 直传 form=arena 丢 maxTicks → 以 arena-blitz 预设
+  为基底合并。④ arenaGen 复用撞 "Exits don't match"（镜像房残留）→ mod 预清镜像房
+  三集合。⑤ prepareArena 与 bindUser 并发竞态（arenaRooms 同步登记 + 坐标存实例自取）。
+- **M4 能力**（仍有效）：round-robin 配对轮转（circle method，奇数 bye）、逐场状态机
+  scheduled→created→settled、pump 单飞、启动恢复三态、开局驱动（starter 5s 轮询 +
+  有界初始唤醒 3 次/席，在途 prompt 不重发不耗配额，超界落届 errors 可查面）、积分榜
   （积分→胜场→净胜分→抽签序）、API `GET/POST /api/tournaments`（无 provider 400 拒建）。
-- **M4 验证基线（全部实测）**：`npm test` **157/157 绿**（27 文件）+ typecheck 零错 +
-  `build`/`build:client` 零错；`test:live` **7/7 绿**（M4 增补：restart 竞态回归 + 锦标赛
-  真实私服链 + kill-9 三真）；`scripts/m2-smoke.sh` 13 步全绿；compose 锦标赛全链
-  （mock provider 驱动：建届→自动建局→双席提交→starter 开局→settle→届终→积分榜，
-  errors=[]；down 保卷再 up：锦标赛/history 均在）。成果审查闭环见 `docs/LOG.md` M4 条目。
-- **M4 期间修复的关键 bug**（均由真实链路暴露）：① `ScreepsService.restart()` 竞态——
-  stop 窗口内并发 ensureRunning 穿透 guard 各自 ensure → 双/三重私服互踩 db.json 丢房
-  （E7N5 实丢；kill-9 IT 取证 + 探针 0/3 对照）。修复：restart 单飞 + stop→ensure→resume
-  核心作为 barrier 塞进 ensurePromise 共享 + live 回归测试钉死。② Agent `submit_code`
-  只上传私服未登记进对局机器 → starter 开局门槛永不可达（`seatBackendFor` 补登记）。
-  ③ 席位 waker 并发重入重复建号（单飞收口）。④ `bindUser` 跨重启不幂等（世界卷持久化
-  后同名用户 already exists——先查世界收编）。⑤ compose 持久卷缺 history/tournaments/
-  agents 三卷（容器重建即丢，已补）。
+- **M5 边界**：arena 局单飞（同世界同时一场 blitz）；固定镜像房不占房间池、不触公平
+  重掷（arenaProbe 对称断言代替 distance 校验）；初始/状态唤醒零跨局信息（M4 红线沿用）；
+  混跑期 world 局 tick 被同步 150ms（全局单值 tick 耦合，R7/n1 已知行为）；世界库
+  需剔除 Invader（已由 resetArena 清场链覆盖）。
+- **M6+**：回放/战报详情、2v2 双房、击杀分到 T 变体、房间可见性精确化、跨容器拆分评估、
+  表现层统一收尾（用户决策：不并入功能里程碑）。
 - **M2/M3 能力**（仍有效）：真实计分（tiebreak creeps→rooms→rclTotal）、WS console 流、
   interrupted 恢复、地图公平性重掷、seatSlug 碰撞加固、compose 容器化+数据卷、
   settle 定点拆解回收、房间池可配置、多活跃对局、对局历史。
@@ -31,8 +44,7 @@ Screeps 斗蛐蛐独立程序：**对局参与者只能是 Agent（LLM 会话）
   prepare 期私服 restart 短暂中断他局（D5 显式接受；免-restart 评估结论：不可行，
   runner staticTerrainData 进程级缓存无增量刷新钩子，见 plan-M4 附录 A）；初始 prompt
   只含本局信息（无跨局积分/排名——公平红线，负向测试钉住）；Agent 工作区目录跨局保留。
-- **M5+**：回放/战报详情、arena-blitz（镜像克隆）、房间可见性精确化、跨容器拆分评估、
-  表现层统一收尾（用户决策：不并入功能里程碑）。
+
 - **Pi SDK spike 已通过**：`docs/spikes/pi-sdk.md`（S1–S6 全绿 + 5 条踩坑结论）。
 - 旧项目结论索引：`reference/AGENTS.md`（交接全文）、`reference/docs/LOG.md`（工程日志）、
   `reference/docs/spikes/`（Screeps 集成面/生命周期陷阱/事件流/地图公平性等 6 份）、

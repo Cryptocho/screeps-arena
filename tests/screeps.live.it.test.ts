@@ -18,6 +18,8 @@ import { computeOutcome } from '../src/server/match/score.js'
 import type { SeatScoreInput } from '../src/server/match/score.js'
 import { allocateRooms } from '../src/server/pool.js'
 import { TournamentStore } from '../src/server/tournament/store.js'
+import { configFromPreset } from '../src/server/match/model.js'
+import { KillLedger, arenaSettleDecision, ticksExhaustedDecision } from '../src/server/match/arena-observe.js'
 import { TournamentScheduler } from '../src/server/tournament/scheduler.js'
 import { tournamentFinished } from '../src/server/tournament/types.js'
 import { MatchHistory } from '../src/server/history.js'
@@ -329,6 +331,139 @@ describe('ScreepsService 真实私服（live）', () => {
     expect(world.users.some((u) => u.username === arena.resolveUser('ta'))).toBe(true)
     rmSync(dataDirT, { recursive: true, force: true })
   }, 600_000)
+  // ---- M5 增补段（plan-M5 D8：本仓 mod live 面 + 真实 blitz 短局）----
+
+  it('M5：arenaGen 镜像对称（本仓 mod）+ teardown 复用（removeRoom 清桩 → arenaGen 再生）', async () => {
+    await svc.ensureRunning()
+    const rev = (t: string): string => (t.match(/.{50}/g) ?? []).map((row) => [...row].reverse().join('')).join('')
+    const arena = new RealArena(svc, { rooms: {}, log: (m) => console.log('[arena]', m) })
+    const { base, mirror, spawnA, spawnB } = await arena.prepareArena()
+    expect(base).toBe('W15N15')
+    expect(mirror).toBe('W14N15')
+    const probe = (await svc.system('arenaProbe', { base, mirror })) as {
+      base: { terrain: string; objects: Array<{ type: string; x: number; y: number }> }
+      mirror: { terrain: string; objects: Array<{ type: string; x: number; y: number }> }
+    }
+    expect(probe.base.terrain).toHaveLength(2500)
+    expect(probe.mirror.terrain).toBe(rev(probe.base.terrain)) // 逐行反转（x'=49-x）
+    for (const kind of ['controller', 'source'] as const) {
+      const b = probe.base.objects.filter((o) => o.type === kind)
+      const mm = probe.mirror.objects.filter((o) => o.type === kind)
+      expect(b.length, kind).toBeGreaterThan(0)
+      expect(b.length, kind).toBe(mm.length)
+      for (const o of b) expect(mm.some((p) => p.x === 49 - o.x && p.y === o.y), kind).toBe(true)
+    }
+    // 对称坐标建号 + spawn 严格镜像 + 能量对等（[N2]）——同一 RealArena 实例
+    // （真实流程 createMatchInternal 单实例；第二实例会误走 prepareRooms stock 路径）
+    arena.assignRoom('p1', base)
+    arena.assignRoom('p2', mirror)
+    const u1 = await arena.bindUser('p1')
+    const u2 = await arena.bindUser('p2')
+    const objs1 = await svc.getRoomObjects(base)
+    const objs2 = await svc.getRoomObjects(mirror)
+    const s1 = objs1.find((o) => o.type === 'spawn')
+    const s2 = objs2.find((o) => o.type === 'spawn')
+    expect(s1, 'spawn in base').toBeDefined()
+    expect(s2, 'spawn in mirror').toBeDefined()
+    expect(s2!.x).toBe(49 - s1!.x)
+    expect(s2!.y).toBe(s1!.y)
+    const world = await svc.getWorld()
+    const e1 = world.users.find((u) => u.username === u1.username)
+    const e2 = world.users.find((u) => u.username === u2.username)
+    const energyOf = (u: unknown): number | undefined => (u as unknown as { spawnEnergy?: number })?.spawnEnergy
+    expect(energyOf(e1)).toBeGreaterThan(0)
+    expect(energyOf(e1)).toBe(energyOf(e2))
+    // 复用探针（[N5]/R6）：removeRoom（全墙桩回插）→ prepareArena 清桩链再生 → 战场可用
+    await arena.releaseSeat('p1')
+    await arena.releaseSeat('p2')
+    const again = await arena.prepareArena()
+    expect(again.base).toBe(base)
+    expect(again.mirror).toBe(mirror)
+    const probe2 = (await svc.system('arenaProbe', { base: again.base, mirror: again.mirror })) as { base: { terrain: string }; mirror: { terrain: string } }
+    expect(probe2.mirror.terrain).toBe(rev(probe2.base.terrain))
+    expect((await svc.getRoomObjects(again.base)).some((o) => o.type === 'controller')).toBe(true)
+  }, 600_000)
+
+  it('M5：真实 blitz 短局——镜像 + botCode 注入双席 → 150ms tick 真跑 → 歼灭/预算结算', async () => {
+    await svc.ensureRunning()
+    const arena = new RealArena(svc, {
+      rooms: {},
+      spawnCoords: { b1: { x: 25, y: 25 }, b2: { x: 24, y: 25 } },
+      log: (m) => console.log('[arena]', m),
+    })
+    // 攻击 bot（双席同码 → 镜像对撞）：造 ATTACK+MOVE creep 冲对方 spawn 拆家
+    const botCode = {
+      main: `
+module.exports.loop = function () {
+  for (const s of Object.values(Game.spawns)) {
+    if (!s.spawning && s.store.energy >= 150) s.spawnCreep([ATTACK, MOVE, MOVE], 'r' + Game.time + '_' + s.id.slice(-3))
+  }
+  for (const c of Object.values(Game.creeps)) {
+    if (!c.memory.tgt) {
+      const hostiles = c.room.find(FIND_HOSTILE_SPAWNS)
+      if (hostiles.length) c.memory.tgt = { x: hostiles[0].pos.x, y: hostiles[0].pos.y }
+    }
+    if (c.memory.tgt) {
+      const t = new RoomPosition(c.memory.tgt.x, c.memory.tgt.y, c.room.name)
+      if (!c.pos.isEqualTo(t)) c.moveTo(t)
+      else c.attack(t)
+    }
+  }
+}`,
+    }
+    void arena.prepareArena()
+    arena.assignRoom('b1', 'W15N15')
+    arena.assignRoom('b2', 'W14N15')
+    const m = new MatchMachine({
+      players: [
+        { seatId: 'b1', username: 'b1' },
+        { seatId: 'b2', username: 'b2' },
+      ],
+      config: { ...configFromPreset('arena-blitz'), maxTicks: 400 },
+    })
+    for (const p of m.players) await arena.bindUser(p.seatId, botCode) // 等待战场就绪 + 建号注码
+    m.submitCode('b1', botCode)
+    m.submitCode('b2', botCode)
+    m.start()
+    expect(m.phase).toBe('running')
+    // 模拟 main.wireMachine started 面：双席建号在 paused 世界完成 → 显式解除暂停
+    await svc.system('resume')
+    // 观察循环（复刻 main.observeArenaMatch 最小面）：eventLog 增量 → KillLedger → 决策
+    const ledger = new KillLedger()
+    const world0 = await svc.getWorld()
+    const startGameTime = world0.gameTime
+    let settled = false
+    for (let i = 0; i < 150 && !settled; i++) {
+      await new Promise((r) => setTimeout(r, 2000))
+      const raw = (await svc.system('eventLog', ledger.cursor)) as {
+        ok?: boolean
+        events?: Array<{ tick: number; eventsByRoom: Record<string, unknown[]> }>
+        cursor?: number
+        bound?: boolean
+      }
+      ledger.consume((raw.events ?? []) as never)
+      const world = await svc.getWorld()
+      const snap: Record<string, { spawns: number; creeps: number; rooms: number; rclTotal: number }> = {}
+      const killScore: Record<string, number> = {}
+      for (const p of m.players) {
+        const u = world.users.find((x) => x.username === arena.resolveUser(p.seatId))
+        snap[p.seatId] = { spawns: u?.spawns ?? 0, creeps: u?.creeps ?? 0, rooms: u?.ownedRooms ?? 0, rclTotal: u?.rclTotal ?? 0 }
+        killScore[p.seatId] = ledger.score(u?.id ?? null)
+      }
+      const decision =
+        arenaSettleDecision(snap, killScore) ??
+        ticksExhaustedDecision(['b1', 'b2'], killScore, startGameTime, world.gameTime, 400, snap)
+      if (decision) {
+        m.settle(decision.reason, Date.now(), decision.outcome)
+        settled = true
+      }
+    }
+    expect(settled, 'blitz 局应在 5 分钟内结算（歼灭或 tick 预算）').toBe(true)
+    expect(['lastStanding', 'ticksExhausted']).toContain(m.state.settleReason)
+    console.log('[m5] blitz settled:', m.state.settleReason, 'winner:', JSON.stringify(m.state.winner), 'scores:', JSON.stringify(m.state.scores))
+    for (const p of m.players) await arena.releaseSeat(p.seatId).catch(() => {})
+  }, 600_000)
+
   it('M4/D8：kill -9 三真合一——真实 main 进程 teardown pending 窗口被杀 → 重启补拆解清残留', async () => {
     // 真实 main.mjs 子进程（dist 未建则现建——live lane 一次性代价）
     const root = fileURLToPath(new URL('..', import.meta.url))
