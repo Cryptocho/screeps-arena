@@ -416,6 +416,16 @@ function createMatchInternal(input: {
   const wakers: Record<string, SeatWaker> = {}
   if (provider) for (const p of input.players) wakers[p.seatId] = lazyWaker(p.seatId)
   driver.watch(m, wakers)
+  // M6 前实测补洞：HTTP 直建对局的初始唤醒（此前只有锦标赛 starter 发——HTTP 局永远
+  // 停在 creating，m2-smoke「建局即 settle」形态掩盖至今）。fire-and-forget，逐席独立。
+  if (provider) {
+    for (const p of input.players) {
+      void (async () => {
+        const w = await wakerFor(p.seatId)
+        await w.prompt(p.seatId, initialPromptText(m.id))
+      })().catch((err) => console.log(`[match] initial prompt ${p.seatId}/${m.id} failed:`, String(err)))
+    }
+  }
   return m
 }
 
