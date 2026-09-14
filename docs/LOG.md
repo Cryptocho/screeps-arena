@@ -1,6 +1,20 @@
 # 工程日志（倒序）
 
-## 2026-09-14 M5 arena-blitz：实施 + 全链实测 + 5 bug 修复（成果审查待做）
+## 2026-09-14 M5 成果审查闭环：PASS——M5 关闭
+
+**一审 FAIL（1 阻塞）**：KillLedger 观察游标误存 gameTime（tick 数值）而 mod eventLog
+契约是 ring 下标（since 越界静默回退 0）→ 观察拍每 500ms 全量重消费整个 ring，击杀分
+随拍数膨胀且新旧事件重消费倍率两席不对称——双淘汰/maxTicks 兜底的击杀分比较可被翻转
+（live IT 因 103:103 对称保号未暴露）。修复：consume 不写游标；游标只由 raw.cursor
+（ring 下标）在两个唯一写点（main.observeArenaMatch / live IT）推进 + 守恒用例。
+**复审 PASS**（0 阻塞 / 2 非阻塞）：修复论证成立 + 恢复局基线（非阻塞 1）已落实 +
+180/180 与 typecheck 审查员实跑复核。非阻塞 2/3（prepareArena × teardown 并发窗口、
+restart 选项合并语义）维持记录不阻塞。M4 遗留的手测项已在验收局一并覆盖。
+
+**M5 验证基线（最终）**：同下条——180/180 + typecheck/build 零错 + test:live 9/9 +
+m2-smoke 13 步 + compose 冒烟 + 真实 LLM（qwen）验收局 errors=[]。
+
+## 2026-09-14 M5 arena-blitz：实施 + 全链实测 + 5 bug 修复
 
 **实施（plan-M5 v2 S0–S6）**：D1 preset/form 数据模型（PRESETS 表 + configFromPreset，
 DEFAULT 回归 world/0）；D2 mod 回迁 arenaGen/arenaProbe（预清链 + 镜像房三集合清理 +
