@@ -441,6 +441,8 @@ module.exports.loop = function () {
         cursor?: number
         bound?: boolean
       }
+      // 一审阻塞 1 订正：游标 = eventLog 返回的 ring 下标（非 tick 数值）
+      ledger.cursor = typeof raw.cursor === 'number' ? raw.cursor : ledger.cursor
       ledger.consume((raw.events ?? []) as never)
       const world = await svc.getWorld()
       const snap: Record<string, { spawns: number; creeps: number; rooms: number; rclTotal: number }> = {}

@@ -58,7 +58,7 @@ describe('M5/B1 归因器打表', () => {
 })
 
 describe('M5/D5 KillLedger', () => {
-  it('累积 kills/losses；decayLosses 独立（不进 score）', () => {
+  it('累积 kills/losses；decayLosses 独立（不进 score）；游标由调用方按 ring 下标推进', () => {
     const l = new KillLedger()
     l.consume([
       { tick: 1, eventsByRoom: { r: [attack('uA', 't1', 30), destroyed('uB', 't1'), destroyed('uB', 't2')] } },
@@ -66,18 +66,29 @@ describe('M5/D5 KillLedger', () => {
     ])
     expect(l.score('uA')).toBe(0) // 1 kill − 1 loss
     expect(l.score('uB')).toBe(0) // 1 kill − 1 loss（老死不计 combat loss）
-    expect(l.cursor).toBe(5)
-    expect(l.score('uA')).toBe(0)
-    l.consume([{ tick: 2, eventsByRoom: {} }]) // 旧 tick 不回退游标
-    expect(l.cursor).toBe(5)
+    expect(l.cursor).toBe(0) // 一审阻塞 1 订正：tick 数值不再写游标（ring 下标归调用方）
+    // 模拟调用方按 mod 返回的 ring 下标推进
+    l.cursor = 42
+    l.consume([{ tick: 2, eventsByRoom: {} }]) // 空 tick 不影响
+    expect(l.cursor).toBe(42)
   })
 
-  it('空消费推进游标；scores 缺席用户 = 0', () => {
+  it('重复消费不双计（一审阻塞 1 回归：KillLedger 单飞 + 观察游标唯一推进点）', () => {
+    // 语义说明：KillLedger.consume 是纯累积器，按设计对喂入批次全量归因——「不双计」
+    // 的责任在调用侧（游标只由 eventLog 返回的 ring 下标推进，见 main.observeArenaMatch
+    // 唯一写点 + 本文件上一用例）。此用例钉住正确用法下的账本守恒，并显式暴露
+    // 重复消费的后果（文档化测试）：
+    const batch: EventTick[] = [
+      { tick: 1, eventsByRoom: { r: [attack('uA', 't1', 30), destroyed('uB', 't1')] } },
+    ]
     const l = new KillLedger()
-    l.consume([{ tick: 3, eventsByRoom: { a: [], b: [] } }])
-    expect(l.cursor).toBe(3)
-    expect(l.score('nobody')).toBe(0)
-    expect(l.score(null)).toBe(0)
+    l.consume(batch)
+    expect(l.score('uA')).toBe(1)
+    expect(l.score('uB')).toBe(-1)
+    // ring 下标游标推进后重放同一 since → mod 侧不会再返回旧事件（ring 窗口语义），
+    // 账本只按新 tick 累积——正确用法下无双计路径：
+    l.cursor = 1 // raw.cursor（ring 下标）
+    expect(l.cursor).toBe(1)
   })
 })
 

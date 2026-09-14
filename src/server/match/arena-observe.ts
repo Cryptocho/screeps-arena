@@ -22,7 +22,13 @@ export type { EventTick, ArenaEvent }
 
 /** 击杀账本：按 Screeps user id 累积 kills/losses/decayLosses；游标单飞归属观察侧。 */
 export class KillLedger {
-  /** 事件游标（host 侧独立——勿与席位 report 游标混用，n2）。 */
+  /**
+   * 事件游标 = eventLog 返回的 **ring 下标**（mod 契约：since=ring 下标非 tick 数值，
+   * cursor=eventRing.length；host 侧独立——勿与席位 report 游标混用，n2）。
+   * 一审阻塞 1 订正：此前误存 gameTime（tick 数值）→ 观察拍 since 越界被 mod 静默
+   * 回退 0 → 整个 ring 每拍全量重消费，击杀分随拍数膨胀且新旧事件重消费倍率不对称，
+   * 双淘汰/maxTicks 的击杀分比较可被翻转。
+   */
   cursor = 0
   private readonly kills = new Map<string, number>()
   private readonly losses = new Map<string, number>()
@@ -33,7 +39,6 @@ export class KillLedger {
   /** 消费一批 eventLog tick（拍平 eventsByRoom → 归因 → 累积）；推进游标。 */
   consume(ticks: EventTick[]): void {
     for (const tick of ticks) {
-      if (typeof tick.tick === 'number' && tick.tick > this.cursor) this.cursor = tick.tick
       const flat: ArenaEvent[] = Object.values(tick.eventsByRoom ?? {}).flat()
       for (const a of attributeTick(flat)) {
         if (a.combat && a.killerUserId) {

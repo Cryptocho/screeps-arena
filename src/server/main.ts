@@ -185,6 +185,8 @@ async function observeArenaMatch(m: MatchMachine): Promise<ArenaSettleDecision |
     m.state.errors.push('event ring overflow detected (bound:false) — kill scores may be underestimated')
     console.log(`[arena] ${m.id}: event ring overflow — kill scores may be underestimated`)
   }
+  // 一审阻塞 1：游标 = eventLog 返回的 ring 下标（非 tick 数值——见 KillLedger.cursor 注释）
+  ledger.cursor = typeof raw.cursor === 'number' ? raw.cursor : ledger.cursor
   ledger.consume((raw.events ?? []) as Parameters<typeof ledger.consume>[0])
   const world = await svc.getWorld()
   const snap = await scoreSnapshotFor(m.players.map((p) => p.seatId))
@@ -561,6 +563,14 @@ function restoreFromJournal(): number {
     machines.set(m.id, m)
     driver.watch(m, wakers)
     console.log(`[journal] restored match ${m.id} at phase ${m.phase} round ${m.state.roundIndex} (interrupted recovery)`)
+    // 审查非阻塞 1：恢复的 arena 局不会再触发 started → 在此补 maxTicks 基线
+    //（restoreFromJournal 在 listen 前同步执行，不会与 observe 竞争）
+    if (m.config.form === 'arena' && !arenaStartGameTime.has(m.id)) {
+      void svc
+        .getWorld()
+        .then((w) => arenaStartGameTime.set(m.id, w.gameTime))
+        .catch((err) => console.log(`[arena] ${m.id} recovery gameTime baseline failed:`, String(err)))
+    }
     restored++
   }
   if (restored > 0) arena.markRoomsPrepared() // 恢复局房间已发展，跳过公平性重掷
