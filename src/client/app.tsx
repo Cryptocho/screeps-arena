@@ -274,7 +274,7 @@ function MatchDetail(props: { id: string }): React.ReactElement {
         </thead>
         <tbody>
           {match.players.map((p) => {
-            const u = world?.users.find((x) => x.username === p.username)
+            const u = world?.users.find((x) => x.username === (p.screepsUsername ?? p.username))
             return (
               <tr key={p.seatId}>
                 <td>{p.seatId}</td>

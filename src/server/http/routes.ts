@@ -28,6 +28,8 @@ export interface ArenaHttpServices {
   getTerrain(rooms: string[]): Promise<{ terrain: Record<string, string> }>
   /** 逐用户 console 增量（游标由服务层维护）。 */
   consoleSince(username: string, since?: number): Promise<{ lines: unknown[]; cursor: number; bound: boolean }>
+  /** seatId → 真实私服用户名（可选；host 侧映射的旁观投影，缺席时视图给 null）。 */
+  seatUsername?(seatId: string): string | undefined
   /** 计分快照（M2/S1；可选——缺席时 settle 维持 M0 全 0 draw）。keys = seatIds。 */
   getScoreSnapshot?(seatIds: string[]): Promise<Record<string, SeatScoreInput> | undefined>
   /** 对局历史（M3/S4；可选——缺席时路由返回空表，dev/mock lane 无需实现）。 */
@@ -72,8 +74,11 @@ function bad(status: number, error: string): ArenaResponse {
   return { status, json: { ok: false, error } }
 }
 
-/** 对局公开投影（players 只暴露 seatId/username/ready/code 有无；不暴露 code 内容）。 */
-export function matchView(m: MatchMachine): unknown {
+/** 对局公开投影（players 只暴露 seatId/username/ready/code 有无；不暴露 code 内容）。
+ *  seatUsername（可选）：host 侧 seatId→真实私服用户名（agent_<slug>）——人类旁观 UI
+ *  用它对齐 /api/world 的 user 行（浏览器实测补洞：前端按 username 匹配永远落空 →
+ *  席位表 rooms/rcl/spawns/creeps 恒 0）。仅旁观投影，不进 Agent 可见面。 */
+export function matchView(m: MatchMachine, seatUsername?: (seatId: string) => string | undefined): unknown {
   return {
     id: m.id,
     phase: m.phase,
@@ -85,6 +90,7 @@ export function matchView(m: MatchMachine): unknown {
       ready: p.ready,
       hasCode: !!p.code,
       autoReady: p.autoReady ?? null,
+      screepsUsername: seatUsername?.(p.seatId) ?? null,
     })),
     errors: m.state.errors,
     settledAt: m.state.settledAt ?? null,
@@ -105,7 +111,7 @@ export async function handleArenaRequest(services: ArenaHttpServices, req: Arena
   const method = req.method.toUpperCase()
 
   if (pathname === '/api/matches') {
-    if (method === 'GET') return ok({ matches: services.matches().map(matchView) })
+    if (method === 'GET') return ok({ matches: services.matches().map((m) => matchView(m, services.seatUsername)) })
     if (method === 'POST') {
       const body = (req.body ?? {}) as {
         config?: Partial<MatchConfig>
@@ -134,7 +140,7 @@ export async function handleArenaRequest(services: ArenaHttpServices, req: Arena
           ...(preset ? { preset } : {}),
           players: body.players,
         })
-        return { status: 201, json: matchView(m) }
+        return { status: 201, json: matchView(m, services.seatUsername) }
       } catch (err) {
         return bad(400, String(err instanceof Error ? err.message : err))
       }
@@ -165,14 +171,14 @@ export async function handleArenaRequest(services: ArenaHttpServices, req: Arena
     const m = services.match(id)
     if (!m) return bad(404, `match ${id} not found`)
     if (!action) {
-      if (method === 'GET') return ok(matchView(m))
+      if (method === 'GET') return ok(matchView(m, services.seatUsername))
       return bad(405, `method ${method} not allowed`)
     }
     if (method !== 'POST') return bad(405, `method ${method} not allowed`)
     try {
       if (action === 'start') {
         m.start()
-        return ok(matchView(m))
+        return ok(matchView(m, services.seatUsername))
       }
       // 真实计分（M2/S1）：先取快照算 outcome；快照缺席/失败 → 降级 M0 全 0 draw（不卡结算）
       let outcome: Parameters<MatchMachine['settle']>[2] | undefined
@@ -185,7 +191,7 @@ export async function handleArenaRequest(services: ArenaHttpServices, req: Arena
         }
       }
       m.settle('manual', Date.now(), outcome)
-      return ok(matchView(m))
+      return ok(matchView(m, services.seatUsername))
     } catch (err) {
       return bad(409, String(err instanceof Error ? err.message : err))
     }

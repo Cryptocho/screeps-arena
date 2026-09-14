@@ -146,6 +146,24 @@ describe('RealArena（S3）', () => {
     expect(p2.lines).toEqual(['hello']) // since=5 → 有增量
   })
 
+  it('consoleSince：结构化帧格式化为显示文本（浏览器实测补洞——前端只收字符串行）', async () => {
+    const svc = fakeSvc({
+      consoleOutput: async () => ({
+        lines: [
+          { messages: { log: ['tick ok'], results: ['result-1'] }, userId: 'u1' },
+          { userId: 'u1', error: 'Error: boom' },
+          { messages: { log: [], results: [] }, userId: 'u1' },
+          'plain-string',
+        ],
+        cursor: 9,
+        bound: true,
+      }),
+    })
+    const arena = new RealArena(svc, { rooms: {} })
+    const page = await arena.consoleSince('agent_a')
+    expect(page.lines).toEqual(['tick ok\nresult-1', 'error: Error: boom', '(tick ran, no output)', 'plain-string'])
+  })
+
   // ---- M3/S2（plan-M3 D5/D1）----
 
   it('[M3/D5] 防误重掷唯一防线：已生成房不在 prepareRooms 重掷域（不二次 generateRoom/restart）', async () => {

@@ -533,6 +533,8 @@ const services: ArenaHttpServices = {
   // 观战 console 口（成果审查阻塞 2）：入参统一为 seatId，host 侧解析真实用户名——
   // 前端显示名（HTTP 建局输入）≠ agent_<slug>；未映射席位原样透传（→ bound:false 静默）
   consoleSince: (user, since) => arena.consoleSince(arena.resolveUser(user) ?? user, since),
+  // 旁观投影：seatId → agent_<slug>（浏览器实测补洞——前端席位表按 username 匹配恒空）
+  seatUsername: (seatId) => arena.resolveUser(seatId),
   getScoreSnapshot: scoreSnapshotFor,
   history: () => history.list(),
   teardownFailures: () => [...teardownFailuresList],
@@ -613,6 +615,24 @@ const restored = restoreFromJournal()
 // M4/D3-③：锦标赛启动恢复（三态判定 + scheduled pair 采纳）+ starter/pump 定时器
 const tournamentsRecovered = scheduler.recoverOnStartup()
 scheduler.startTimers()
+// M6 前实测补洞②：HTTP 直建对局自动开局（开局驱动只有锦标赛 starter——直建局全员
+// 交码后永停 creating；上洞 1047583 补了初始唤醒，本洞补开局）。锦标赛对局由
+// scheduler 专属驱动，按 id 排除避免双 start。世界局与 arena 局同一门槛（全员有码）。
+const directStarter = setInterval(() => {
+  const tournamentMatchIds = new Set(
+    tournamentStore.list().flatMap((t) => t.matches.map((x) => x.matchId ?? '')),
+  )
+  for (const m of machines.values()) {
+    if (m.phase !== 'creating' || tournamentMatchIds.has(m.id)) continue
+    if (m.players.some((p) => !p.code)) continue
+    try {
+      m.start()
+      console.log(`[match] auto-started direct match ${m.id}`)
+    } catch (err) {
+      console.log(`[match] auto-start ${m.id} failed:`, String(err))
+    }
+  }
+}, 5000)
 driver.start()
 // 启动即拉起私服（观战形态世界常跑；不阻塞 HTTP 起服，但失败 = 主功能不可用，fail fast）。
 // 私服就绪后先补拆解 history 中 teardown:pending 的残留（D3：崩溃于 pending 窗口 →
@@ -643,6 +663,7 @@ console.log(
 process.on('SIGINT', async () => {
   driver.stop()
   scheduler.stopTimers()
+  clearInterval(directStarter)
   for (const r of runners.values()) r.dispose()
   await handle.close()
   process.exit(0)

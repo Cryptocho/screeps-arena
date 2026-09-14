@@ -28,6 +28,8 @@ export interface MatchView {
     ready: boolean
     hasCode: boolean
     autoReady: { round: number; reason: string } | null
+    /** 真实私服用户名（agent_<slug>；人类旁观 UI 对齐 /api/world 用，Agent 可见面不含）。 */
+    screepsUsername: string | null
   }>
   errors: string[]
   settledAt: number | null

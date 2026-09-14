@@ -28,6 +28,21 @@ export interface RealArenaOptions {
   log?: (msg: string) => void
 }
 
+/** console 帧显示文本（平移 reference/src/host/http.ts formatConsoleFrame，
+ *  对齐 tools.ts 的 {log,results} 渲染口径）。 */
+export function formatConsoleFrame(entry: unknown): string {
+  if (typeof entry === 'string') return entry
+  const message = entry as { messages?: string[] | { log?: string[]; results?: string[] }; error?: string }
+  if (Array.isArray(message.messages)) return message.messages.join('\n')
+  if (message.messages) {
+    const { log = [], results = [] } = message.messages
+    const parts = [...log, ...results]
+    return parts.length ? parts.join('\n') : '(tick ran, no output)'
+  }
+  if (message.error) return `error: ${message.error}`
+  return JSON.stringify(message)
+}
+
 /** arena-blitz 固定基准房（plan-M5 D3）：镜像 = 东邻 roomNameFromXY(x+1,y)。 */
 export const ARENA_BASE_ROOM = 'W15N15'
 export function arenaMirrorRoom(base = ARENA_BASE_ROOM): string {
@@ -425,11 +440,14 @@ export class RealArena implements SeatRegistry, ArenaBackend {
     return lines.join('\n')
   }
 
-  /** console ring 增量（游标推进；供 HTTP 桥 S4 的逐用户 console 流）。 */
+  /** console ring 增量（游标推进；供 HTTP 桥 S4 的逐用户 console 流）。
+   *  私服 ring 存的是结构化帧（{messages:{log,results}} / {error}），此处格式化为
+   *  显示文本（平移 reference formatConsoleFrame；浏览器实测暴露 M2 起前端只收
+   *  字符串行、对象帧全被过滤 → console 面板恒 "(no output)"）。 */
   async consoleSince(username: string, since?: number): Promise<{ lines: unknown[]; cursor: number; bound: boolean }> {
     const cursor = since ?? this.consoleCursors.get(username) ?? 0
     const page = await this.svc.consoleOutput(username, cursor)
     this.consoleCursors.set(username, page.cursor)
-    return page
+    return { ...page, lines: page.lines.map(formatConsoleFrame) }
   }
 }

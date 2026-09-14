@@ -24,6 +24,8 @@ export interface DevServicesOptions {
   world?: () => Promise<unknown>
   terrain?: (rooms: string[]) => Promise<{ terrain: Record<string, string> }>
   console?: (user: string, since?: number) => Promise<{ lines: unknown[]; cursor: number; bound: boolean }>
+  /** seatId → 真实用户名（mock 世界 = seatId 本身；可覆盖）。 */
+  seatUsername?: (seatId: string) => string | undefined
   /** 计分快照（M2/S1；按 seatIds 取，mock 世界可回静态计数；缺席 → settle 维持 M0 draw）。 */
   scoreSnapshot?: (seatIds: string[]) => Promise<Record<string, SeatScoreInput> | undefined>
 }
@@ -67,6 +69,7 @@ export function createArenaDevServices(opts: DevServicesOptions): {
     getWorld: opts.world ?? (async () => ({ ok: true, gameTime: 0, users: [] })),
     getTerrain: opts.terrain ?? (async (rooms) => ({ terrain: Object.fromEntries(rooms.map((r) => [r, '0'.repeat(2500)])) })),
     consoleSince: opts.console ?? (async () => ({ lines: [], cursor: 0, bound: true })),
+    seatUsername: opts.seatUsername ?? ((seatId) => seatId),
     ...(opts.scoreSnapshot ? { getScoreSnapshot: (seatIds: string[]) => opts.scoreSnapshot!(seatIds) } : {}),
   }
   return { services, machines }
