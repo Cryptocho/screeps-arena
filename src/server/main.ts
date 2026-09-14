@@ -416,16 +416,6 @@ function createMatchInternal(input: {
   const wakers: Record<string, SeatWaker> = {}
   if (provider) for (const p of input.players) wakers[p.seatId] = lazyWaker(p.seatId)
   driver.watch(m, wakers)
-  // M6 前实测补洞：HTTP 直建对局的初始唤醒（此前只有锦标赛 starter 发——HTTP 局永远
-  // 停在 creating，m2-smoke「建局即 settle」形态掩盖至今）。fire-and-forget，逐席独立。
-  if (provider) {
-    for (const p of input.players) {
-      void (async () => {
-        const w = await wakerFor(p.seatId)
-        await w.prompt(p.seatId, initialPromptText(m.id))
-      })().catch((err) => console.log(`[match] initial prompt ${p.seatId}/${m.id} failed:`, String(err)))
-    }
-  }
   return m
 }
 
@@ -519,7 +509,18 @@ const services: ArenaHttpServices = {
     // 则永不开局、永远 paused（观战形态时钟驱动局也过不了代码门槛）
     const form = input.preset === 'arena-blitz' || input.config?.form === 'arena' ? 'arena' : 'world'
     if (form === 'arena' && !provider) throw new Error('arena matches require a provider (OPENROUTER_API_KEY missing)')
-    return createMatchInternal(input)
+    const m = createMatchInternal(input)
+    // M6 前实测补洞（审查阻塞 2 修订）：初始唤醒只发 HTTP 直建局——锦标赛对局的首发/
+    // 补发/配额核算归 scheduler.sendInitialPrompts 独占（此前 createMatchInternal 里发
+    // 会让锦标赛席位双发且绕过 wakerCreating 单飞）。经 lazyWaker 走单飞，fire-and-forget。
+    if (provider) {
+      for (const p of m.players) {
+        void lazyWaker(p.seatId)
+          .prompt(p.seatId, initialPromptText(m.id))
+          .catch((err) => console.log(`[match] initial prompt ${p.seatId}/${m.id} failed:`, String(err)))
+      }
+    }
+    return m
   },
   createTournament: (input) => {
     // D6：无 provider（观战形态）拒建——无唤醒的锦标赛永不完成且无提示
