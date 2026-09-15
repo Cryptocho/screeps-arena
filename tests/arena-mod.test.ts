@@ -9,6 +9,7 @@
  */
 import { describe, expect, it, beforeEach } from 'vitest'
 import { createRequire } from 'node:module'
+import { attributeTick } from '../src/server/match/attribution.js'
 
 const requireCjs = createRequire(import.meta.url)
 
@@ -16,13 +17,22 @@ function nowPromise(value: unknown) {
   return Promise.resolve(value)
 }
 
+function pathOf(doc: Record<string, unknown>, key: string): unknown {
+  let cur: unknown = doc
+  for (const k of key.split('.')) {
+    if (cur == null || typeof cur !== 'object') return undefined
+    cur = (cur as Record<string, unknown>)[k]
+  }
+  return cur
+}
+
 function matchDoc(doc: any, q: any): boolean {
   if (q == null || typeof q !== 'object') return true
   if (Array.isArray(q.$and)) return q.$and.every((cond: any) => matchDoc(doc, cond))
   return Object.entries(q).every(([k, v]: [string, any]) => {
-    if (v && typeof v === 'object' && Array.isArray(v.$in)) return v.$in.includes(doc[k])
-    if (v && typeof v === 'object' && '$ne' in v) return doc[k] !== v.$ne
-    return doc[k] === v
+    if (v && typeof v === 'object' && Array.isArray(v.$in)) return v.$in.includes(pathOf(doc, k))
+    if (v && typeof v === 'object' && '$ne' in v) return pathOf(doc, k) !== v.$ne
+    return pathOf(doc, k) === v
   })
 }
 
@@ -322,6 +332,74 @@ describe('arena mod（S2 打表）', () => {
     await new Promise((r) => setTimeout(r, 10))
     const res2 = await systemCmd(bundle, 'eventLog', 0)
     expect(res2.body?.events).toHaveLength(1)
+  })
+
+  /** M6/S1 enrich 打表共用：驱动一次 roomsDone，返回该 tick 的事件数组。 */
+  async function driveTick(events: Record<string, unknown[]>, objects: Array<Record<string, unknown>>, room = 'E5N5') {
+    await systemCmd(bundle, 'getTickDuration') // 触发订阅
+    const listener = bundle.pubsubListeners.find((l) => l.channel === 'roomsDone')!.listener
+    if (!(bundle.db._collections.rooms as Array<{ _id: string }>).some((r) => r._id === room)) {
+      ;(bundle.db._collections.rooms as Array<Record<string, unknown>>).push({ _id: room, status: 'normal' })
+    }
+    ;(bundle.db._collections['rooms.objects'] as Array<Record<string, unknown>>).push(...objects)
+    bundle.envStore.set('roomEventLog:', JSON.stringify({ [room]: JSON.stringify(events[room]) }))
+    listener(String(1000 + (bundle.db._collections['rooms.objects'] as unknown[]).length))
+    // 采集链纯 promise（db.find → hmget → resolveEventUsers）——排空微任务即可，不用墙钟
+    for (let i = 0; i < 20; i++) await Promise.resolve()
+    const res = await systemCmd(bundle, 'eventLog', 0)
+    const entries = res.body?.events as Array<{ eventsByRoom: Record<string, Array<Record<string, unknown>>> }>
+    return entries[entries.length - 1]!.eventsByRoom[room]!
+  }
+
+  it('M6/S1 enrich：活对象 → objectInfo via=live（type/x/y 取文档）', async () => {
+    const evs = await driveTick(
+      { E5N5: [{ event: 1, objectId: 'atk1', data: { targetId: 'tgt1', damage: 30 } }] },
+      [
+        { _id: 'atk1', room: 'E5N5', type: 'creep', x: 10, y: 20, user: 'u1' },
+        { _id: 'tgt1', room: 'E5N5', type: 'creep', x: 11, y: 21, user: 'u2' },
+      ],
+    )
+    expect(evs[0]!.objectInfo).toEqual({ x: 10, y: 20, type: 'creep', via: 'live' })
+    expect(evs[0]!.targetInfo).toEqual({ x: 11, y: 21, type: 'creep', via: 'live' })
+    expect(evs[0]!.attackerUser).toBe('u1')
+    expect(evs[0]!.targetUser).toBe('u2')
+  })
+
+  it('M6/S1 enrich：被毁 creep 已移除 → tombstone 兜底（type 归一 creep）；归因不受 enrich 影响', async () => {
+    const evs = await driveTick(
+      {
+        E5N5: [
+          { event: 1, objectId: 'atk1', data: { targetId: 'dead1', damage: 50 } },
+          { event: 2, objectId: 'dead1', data: { type: 'creep' } },
+        ],
+      },
+      [
+        { _id: 'atk1', room: 'E5N5', type: 'creep', x: 10, y: 20, user: 'u1' },
+        { _id: 'tomb1', room: 'E5N5', type: 'tombstone', x: 11, y: 21, user: 'u2', creepId: 'dead1', creepBody: ['attack'] },
+      ],
+    )
+    const destroyed = evs.find((e) => e.event === 2)!
+    expect(destroyed.objectInfo).toEqual({ x: 11, y: 21, type: 'creep', via: 'tombstone' })
+    expect(destroyed.attackerUser).toBe('u2')
+    // enrich 只加字段：归因一致（kills 归攻击方，losses 归被毁对象 owner）
+    expect(attributeTick(evs as never)).toEqual([{ ownerUserId: 'u2', killerUserId: 'u1', combat: true }])
+  })
+
+  it('M6/S1 enrich：被毁 structure → ruin 兜底（type 取 structure.type）', async () => {
+    const evs = await driveTick(
+      { E5N5: [{ event: 2, objectId: 'dead2', data: { type: 'spawn' } }] },
+      [
+        { _id: 'ruin1', room: 'E5N5', type: 'ruin', x: 24, y: 25, user: 'u2', structure: { id: 'dead2', type: 'spawn', user: 'u2' } },
+      ],
+    )
+    expect(evs[0]!.objectInfo).toEqual({ x: 24, y: 25, type: 'spawn', via: 'ruin' })
+    expect(evs[0]!.attackerUser).toBe('u2')
+  })
+
+  it('M6/S1 enrich：解析全 miss（极端时序）→ objectInfo=null（前端降级房级）', async () => {
+    const evs = await driveTick({ E5N5: [{ event: 2, objectId: 'ghost', data: {} }] }, [])
+    expect(evs[0]!.objectInfo).toBeNull()
+    expect(evs[0]!.attackerUser).toBeNull()
   })
 
   it('裁剪面：replay* 已删（unknown command 拒绝）；M5/S1 回迁后 arenaGen/arenaProbe 已在（参数校验拒绝）', async () => {

@@ -35,6 +35,15 @@ async function run(
   return await tool.execute('call_test', params)
 }
 
+describe('M6/D5 公平边界：工具面恰三件（无 replay/战报类新增）', () => {
+  it('buildSeatTools 名单恰为 {submit_code, report, console}', () => {
+    const names = buildSeatTools(makeDeps(), 'seat-a')
+      .map((t) => t.name)
+      .sort()
+    expect(names).toEqual(['console', 'report', 'submit_code'])
+  })
+})
+
 describe('工具面公平边界（红线）', () => {
   it('席位 A 的 submit 落位在 userA 名下，userB 零触碰（跨席位隔离）', async () => {
     const { deps, tools } = toolMap('seat-a')

@@ -1,6 +1,6 @@
-# TEST.md — 用户手测指导（M1 + M2 + M3 + M4）
+# TEST.md — 用户手测指导（M1–M6）
 
-> 纪律：本文件每条命令均已由 Agent 在本环境真实执行并验证通过（最近：2026-09-13 M4）。
+> 纪律：本文件每条命令均已由 Agent 在本环境真实执行并验证通过（最近：2026-09-15 M6）。
 > 需要您手测的仅限浏览器交互观感；未实测项均如实标注。
 
 ## 0. 前置
@@ -149,6 +149,42 @@ curl -s -X POST http://localhost:8787/api/matches -H 'content-type: application/
 # 地图 canvas 可见 W15N15/W14N15 镜像对；结算后历史表出现 draw/ticksExhausted/teardown done。
 ```
 
+## 0.11 M6 回放与战报（已实测 2026-09-15，真实私服 + 真实 qwen + 浏览器）
+
+```sh
+# 起服（后台务必 setsid 脱离——nohup 不挡进程组 SIGTERM，长轮询调用超时会连坐杀服务）
+fnm exec --using=22 -- npm run build && fnm exec --using=22 -- npm run build:client
+setsid env OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
+  fnm exec --using=22 -- node dist/server/main.mjs --port 8787 --host 127.0.0.1 --data-dir .arena-data
+
+# 直建 arena 局（maxTicks 缩短以便快速结算；真实 LLM 席位交码后 directStarter 自动开局）
+curl -s -X POST http://127.0.0.1:8787/api/matches -H 'content-type: application/json' \
+  -d '{"preset":"arena-blitz","config":{"maxTicks":600},"players":[{"seatId":"m6a","username":"m6a"},{"seatId":"m6b","username":"m6b"}]}'
+
+# 结算后（GET /api/matches/<id> 变 404：机器已释放）：
+curl -s http://127.0.0.1:8787/api/history                       # 该行含 "replay":true（文件在位）
+curl -s "http://127.0.0.1:8787/api/replays/<id>?frames=none"    # {meta, summary}（无 frames）
+curl -s "http://127.0.0.1:8787/api/replays/<id>?from=400&to=420" # frames 按 gameTime 窗口裁剪
+ls -l .arena-data/replays/                                      # <matchId>.jsonl（append-only）
+```
+浏览器（http://127.0.0.1:8787）：大厅「历史对局」行 → **战报** 按钮 → 战报页含
+summary 表 / 计分曲线（creeps 实线 + spawns 虚线，席位红绿）/ 击杀时间线；点 **加载回放**
+→ 滑条 + 播放/暂停 + 1×/4×/16×；拖动滑条与播放均实时切帧，地图 canvas 显示单位
+（席位居属色）与击杀标记（有坐标 → 点；缺坐标 → 房级色带）。
+
+**实测记录（2026-09-15）**：单测 **214/214**（33 文件）+ typecheck/build 零错；
+`spike:pi` 全绿；**test:live 10/10**（M6 增补：真实短局记录器全链——enrich 落帧 →
+JSONL → ReplayStore 断言 idmap/frames/位置采样/击杀与账本一致/体积上界）；
+m2-smoke **13 步全绿**；真实 qwen 验收局：直建 → 双 Agent 交码（含 ERR 自修）→ 自动开局
+→ ticksExhausted 结算（draw m6a 103 : m6b 100）→ 战报页 181 帧 + 曲线 + 回放 seek/播放
+（截图留档）。**过程中真实链路暴露并修复 1 洞**：新增 `/api/replays/:id` 未在 Fastify 壳
+注册（纯函数打表有路由、壳未挂）→ 404；已补壳注册 + 壳级 IT 钉住。
+已知边界：world 局帧不含 kills（world 侧无 host 事件游标消费点，plan-M6 R5 不做第二游标）；
+ring 饱和后事件停投（M5 既有行为）由 summary 的 `eventsIncomplete` 角标可见。
+
+注：`.bashrc` 的 export 行被非交互早退守卫挡住，非交互 shell 里取用方法：
+`eval "$(grep -E '^export OPENROUTER_API_KEY=' ~/.bashrc)"`（只进当前进程环境，不落盘）。
+
 ## 1. 启动（两个终端，dev mock 模式）
 
 **终端 1**（HTTP 桥，端口 8787）：
@@ -193,12 +229,16 @@ WS 订阅增量（M2，2s 轮询已删）；**样式仍未做**（全部功能�
 ## 3. 自动化 lane（已实测，供回归）
 
 ```sh
-fnm exec --using=22 -- npm test           # 157/157 绿（27 文件，离线 mock，零成本；M4 含 bracket/store/scheduler/flow/fairness）
+fnm exec --using=22 -- npm test           # 214/214 绿（33 文件，离线 mock，零成本；M6 基线，M4 前为 157/157）
 fnm exec --using=22 -- npm run typecheck  # 零错
 fnm exec --using=22 -- npm run build && fnm exec --using=22 -- npm run build:client  # 服务端 main.mjs + vite 前端零错
-fnm exec --using=22 -- npm run test:live  # 真实私服 IT（首次安装 ≈6 分钟；M4 后 7/7 绿，含 restart 竞态回归+锦标赛链+kill-9 恢复）
+fnm exec --using=22 -- npm run test:live  # 真实私服 IT（M6 后 10/10 绿，≈16 分钟；含 restart 竞态+锦标赛链+kill-9 恢复+回放记录器全链）
 OPENROUTER_API_KEY=… fnm exec --using=22 -- npm run test:smoke  # 真实 LLM 冒烟（已实测 418s 绿）
 sh scripts/m2-smoke.sh                     # main.mjs 全链冒烟（M3 后 13 步，含 teardown/换席位再建局/恢复）
+                                           #  M6 后补私服复用：预装模板 reflink 克隆（实测 76s，此前冷装 ≈13min 撞就绪窗口必挂）
+                                           #  缓存位于 ~/.cache/screeps-arena-smoke/{template,data}（可用 SMOKE_TEMPLATE/SMOKE_DATA 覆盖）；
+                                           #  模板缺失时脚本自愈（--install-only 冷装一次 ≈13min）。清理即删该目录。
+                                           #  ⚠ $DATA 必须放支持 reflink 的 fs（本仓 btrfs）；/tmp 是 tmpfs——不支持 reflink 且重启即失
 fnm exec --using=22 -- npx tsx scripts/s0-removal-probe.ts   # M3 拆解原语真实私服探针（幂等可重跑）
 fnm exec --using=22 -- npx tsx scripts/mock-llm.ts           # M4 mock LLM（compose 锦标赛链驱动，见 §0.8）
 ```

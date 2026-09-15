@@ -3,7 +3,7 @@
  * （lastStanding/双淘汰/ticksExhausted）；HTTP 层 botCode 剥除负向 + preset 校验（S4）。
  */
 import { describe, expect, it } from 'vitest'
-import { attributeTick, EVENT_ATTACK, EVENT_OBJECT_DESTROYED } from '../src/server/match/attribution.js'
+import { attributeTick, attributeTickDetailed, EVENT_ATTACK, EVENT_OBJECT_DESTROYED } from '../src/server/match/attribution.js'
 import type { ArenaEvent, EventTick } from '../src/server/match/attribution.js'
 import { KillLedger, arenaSettleDecision, ticksExhaustedDecision } from '../src/server/match/arena-observe.js'
 import { handleArenaRequest } from '../src/server/http/routes.js'
@@ -55,6 +55,14 @@ describe('M5/B1 归因器打表', () => {
     const out = attributeTick(Object.values(tick.eventsByRoom).flat())
     expect(out).toEqual([{ ownerUserId: 'uB', killerUserId: 'uA', combat: true }])
   })
+
+  it('M6/S1 attributeTickDetailed：明细携被毁对象 id（recorder 的 (tick,objectId) 关联键）', () => {
+    const out = attributeTickDetailed([attack('uA', 't1', 30), destroyed('uB', 't1'), destroyed('uC', 't2')])
+    expect(out).toEqual([
+      { objectId: 't1', attribution: { ownerUserId: 'uB', killerUserId: 'uA', combat: true } },
+      { objectId: 't2', attribution: { ownerUserId: 'uC', killerUserId: null, combat: false } },
+    ])
+  })
 })
 
 describe('M5/D5 KillLedger', () => {
@@ -71,6 +79,19 @@ describe('M5/D5 KillLedger', () => {
     l.cursor = 42
     l.consume([{ tick: 2, eventsByRoom: {} }]) // 空 tick 不影响
     expect(l.cursor).toBe(42)
+  })
+
+  it('M6/S1 consume 返回 (tick,objectId) 归因明细（供 recorder；返回值向后兼容）', () => {
+    const l = new KillLedger()
+    const details = l.consume([
+      { tick: 1, eventsByRoom: { r: [attack('uA', 't1', 30), destroyed('uB', 't1')] } },
+      { tick: 4, eventsByRoom: { r: [destroyed('uC', 't2')] } },
+    ])
+    expect(details).toEqual([
+      { tick: 1, objectId: 't1', attribution: { ownerUserId: 'uB', killerUserId: 'uA', combat: true } },
+      { tick: 4, objectId: 't2', attribution: { ownerUserId: 'uC', killerUserId: null, combat: false } },
+    ])
+    expect(l.score('uA')).toBe(1) // 明细与累积同源，不重复计数
   })
 
   it('重复消费不双计（一审阻塞 1 回归：KillLedger 单飞 + 观察游标唯一推进点）', () => {

@@ -35,6 +35,60 @@ describe('MatchDriver（S4）', () => {
     driver.stop()
   })
 
+  it('M6/S2 worldObserve 相位门控：world 局 running 调用；roundBreak 与 arena 局零调用', async () => {
+    const seen: string[] = []
+    const driver = new MatchDriver({
+      intervalMs: 10,
+      worldObserve: async (m) => {
+        seen.push(`${m.config.form}:${m.phase}`)
+      },
+    })
+    const players = [
+      { seatId: 'a', username: 'ua' },
+      { seatId: 'b', username: 'ub' },
+    ]
+    // world 局：roundMs=30 且起点回拨 → 本拍 advance 进 roundBreak；前一次 tick 仍处 running
+    const world = new MatchMachine({ config: { roundMs: 30, roundBreakTimeoutMs: 60_000, maxRounds: 8 }, players })
+    world.submitCode('a', { main: 'x' })
+    world.submitCode('b', { main: 'x' })
+    driver.watch(world, {})
+    world.start()
+    await driver.tick()
+    expect(seen).toEqual(['world:running'])
+    world.state.roundStartedAt = Date.now() - 100 // 周期到点
+    await driver.tick() // advance → roundBreak（世界暂停）
+    expect(world.phase).toBe('roundBreak')
+    expect(seen).toEqual(['world:running']) // 门控：roundBreak 期零调用（v4 钉死）
+    // arena 局同样不走 world 采样（form 分支隔离）
+    const arena = new MatchMachine({ config: { form: 'arena', maxTicks: 100, seats: 2 }, players })
+    arena.submitCode('a', { main: 'x' })
+    arena.submitCode('b', { main: 'x' })
+    driver.watch(arena, {})
+    arena.start()
+    await driver.tick()
+    expect(seen).toEqual(['world:running'])
+    driver.stop()
+  })
+
+  it('M6/S2 worldObserve 抛错只记日志，不中断 tick 循环', async () => {
+    const logs: string[] = []
+    const driver = new MatchDriver({
+      intervalMs: 10,
+      log: (m) => logs.push(m),
+      worldObserve: async () => {
+        throw new Error('boom')
+      },
+    })
+    const m = new MatchMachine({ players: [{ seatId: 'a', username: 'ua' }, { seatId: 'b', username: 'ub' }] })
+    m.submitCode('a', { main: 'x' })
+    m.submitCode('b', { main: 'x' })
+    driver.watch(m, {})
+    m.start()
+    await expect(driver.tick()).resolves.toBeUndefined()
+    expect(logs.some((l) => l.includes('world observe'))).toBe(true)
+    driver.stop()
+  })
+
   it('onEvent：round_break → 全席位唤醒一次（去重）；唤醒失败不中断', async () => {
     const driver = new MatchDriver()
     const m = new MatchMachine({

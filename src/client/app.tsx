@@ -8,13 +8,15 @@ import type { MatchView, WorldSnapshot } from '../shared/types.js'
 import { createMatch, fetchHistory, fetchMatch, fetchMatches, fetchTerrain, fetchTournaments, fetchWorld, settleMatch, startMatch, subscribeConsole, subscribeMatch } from './api.js'
 import type { HistoryView, TournamentView } from './api.js'
 import { TerrainCanvas } from './terrain-canvas.js'
+import { BattleReport } from './replay.js'
 
-type Tab = 'lobby' | 'match'
+type Tab = 'lobby' | 'match' | 'report'
 
 export function App(): React.ReactElement {
   const [tab, setTab] = useState<Tab>('lobby')
   const [matches, setMatches] = useState<MatchView[]>([])
   const [currentId, setCurrentId] = useState<string | null>(null)
+  const [reportId, setReportId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
@@ -38,13 +40,19 @@ export function App(): React.ReactElement {
       <nav style={{ marginBottom: 12 }}>
         <button onClick={() => setTab('lobby')} disabled={tab === 'lobby'}>大厅</button>{' '}
         {currentId && <button onClick={() => setTab('match')} disabled={tab === 'match'}>对局 {currentId}</button>}
+        {reportId && <button onClick={() => setTab('report')} disabled={tab === 'report'}>战报 {reportId}</button>}
       </nav>
       {error && <p style={{ color: '#e07070' }}>{error}</p>}
-      {tab === 'lobby' ? (
-        <Lobby matches={matches} onOpen={(id) => { setCurrentId(id); setTab('match') }} onChanged={refresh} />
-      ) : (
-        <MatchDetail id={currentId!} />
+      {tab === 'lobby' && (
+        <Lobby
+          matches={matches}
+          onOpen={(id) => { setCurrentId(id); setTab('match') }}
+          onOpenReport={(id) => { setReportId(id); setTab('report') }}
+          onChanged={refresh}
+        />
       )}
+      {tab === 'match' && <MatchDetail id={currentId!} />}
+      {tab === 'report' && <BattleReport matchId={reportId!} />}
     </div>
   )
 }
@@ -52,6 +60,7 @@ export function App(): React.ReactElement {
 function Lobby(props: {
   matches: MatchView[]
   onOpen: (id: string) => void
+  onOpenReport: (id: string) => void
   onChanged: () => void
 }): React.ReactElement {
   const [seatA, setSeatA] = useState('seat-a')
@@ -115,7 +124,7 @@ function Lobby(props: {
           ))}
         </tbody>
       </table>
-      <MatchHistoryList />
+      <MatchHistoryList onOpenReport={props.onOpenReport} />
       <TournamentList />
     </div>
   )
@@ -170,8 +179,9 @@ function TournamentList(): React.ReactElement {
   )
 }
 
-/** 对局历史（M3/S4）：settle 后的记账列表（journal 语义不含已完结局，此表全量）。 */
-function MatchHistoryList(): React.ReactElement {
+/** 对局历史（M3/S4）：settle 后的记账列表（journal 语义不含已完结局，此表全量）。
+ *  M6/D6：行加「战报」入口——文件缺失则按钮禁用 + tooltip（与 history 是否可读解耦）。 */
+function MatchHistoryList(props: { onOpenReport: (id: string) => void }): React.ReactElement {
   const [history, setHistory] = useState<HistoryView[]>([])
   useEffect(() => {
     const load = async () => {
@@ -191,7 +201,7 @@ function MatchHistoryList(): React.ReactElement {
       <h3 style={{ fontSize: 13 }}>历史对局</h3>
       <table cellPadding={4}>
         <thead>
-          <tr><th>id</th><th>round</th><th>winner</th><th>reason</th><th>scores</th><th>ended</th><th>teardown</th></tr>
+          <tr><th>id</th><th>round</th><th>winner</th><th>reason</th><th>scores</th><th>ended</th><th>teardown</th><th></th></tr>
         </thead>
         <tbody>
           {history.map((h) => (
@@ -203,6 +213,15 @@ function MatchHistoryList(): React.ReactElement {
               <td>{h.scores ? Object.entries(h.scores).map(([k, v]) => `${k}:${v}`).join(' ') : '—'}</td>
               <td>{h.settledAt ? new Date(h.settledAt).toLocaleString() : ''}</td>
               <td>{h.teardown}</td>
+              <td>
+                <button
+                  onClick={() => props.onOpenReport(h.id)}
+                  disabled={!h.replay}
+                  title={h.replay ? '查看战报/回放' : '无回放数据'}
+                >
+                  战报
+                </button>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -311,6 +330,12 @@ function MatchDetail(props: { id: string }): React.ReactElement {
         <div style={{ marginTop: 8, color: '#e0a070' }}>
           <h3 style={{ fontSize: 13 }}>errors</h3>
           <pre>{match.errors.join('\n')}</pre>
+        </div>
+      )}
+      {/* M6/D6：战报区（3s 轮询 summary；creating 期尚无 replay 文件，不渲染以免误报） */}
+      {match.phase !== 'creating' && (
+        <div style={{ marginTop: 16, borderTop: '1px solid #2a2f3a', paddingTop: 8 }}>
+          <BattleReport matchId={match.id} live={match.phase !== 'settled'} />
         </div>
       )}
     </div>

@@ -2,9 +2,10 @@
 # ScreepsService 仅 managed 模式，跨容器拆分归 M3+/M4 评估）。
 # 卷挂 server/ 整目录（世界库 db.json 在 serverDir 根，不在 db/ 子目录——实测订正）：
 # named volume 首次挂载自动从镜像拷入（含安装产物 node_modules + 播种 db.json），不受遮蔽影响。
-# M3/M4 订正：持久面共 5 处——server/（世界库）、journal/（对局恢复）、history/（对局历史
+# M3/M4 订正：持久面共 6 处——server/（世界库）、journal/（对局恢复）、history/（对局历史
 # + teardown pending 补拆解载体）、tournaments/（锦标赛状态）、agents/（席位工作区，
-# 超时兜底语义依赖跨局保留）。缺一则在容器重建时丢失（M4 compose 实测发现并修复）。
+# 超时兜底语义依赖跨局保留）、replays/（回放 JSONL，M6 append-only——缺则在容器重建时丢回放）；
+# 缺一则在容器重建时丢失（M4 compose 实测发现并修复）。
 services:
   app:
     build: .
@@ -26,6 +27,7 @@ services:
       - arena-history:/app/.arena-data/history
       - arena-tournaments:/app/.arena-data/tournaments
       - arena-agents:/app/.arena-data/agents
+      - arena-replays:/app/.arena-data/replays
 
 volumes:
   screeps-data:
@@ -33,3 +35,4 @@ volumes:
   arena-history:
   arena-tournaments:
   arena-agents:
+  arena-replays:

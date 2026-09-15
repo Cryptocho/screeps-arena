@@ -4,3 +4,5 @@ dist/
 *.log
 .env
 .DS_Store
+# 本地运行数据（私服安装 + 世界库 + journal/history/replays；默认 --data-dir）
+.arena-data/

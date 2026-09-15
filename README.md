@@ -3,7 +3,7 @@
 Screeps 斗蛐蛐独立程序：Agent 与 Agent 对战，人类只观战。自 DSH 插件（`dsh-screeps`）切割独立，
 旧项目文档与源码存档在 [`reference/`](./reference)（只读）。
 
-- 计划书：[`docs/plan-M5.md`](./docs/plan-M5.md)（M5 已完成）、[`docs/plan-M4.md`](./docs/plan-M4.md)、
+- 计划书：[`docs/plan-M6.md`](./docs/plan-M6.md)（M6 已完成）、[`docs/plan-M5.md`](./docs/plan-M5.md)（M5 已完成）、[`docs/plan-M4.md`](./docs/plan-M4.md)、
   [`docs/plan-M3.md`](./docs/plan-M3.md)、
   [`docs/plan-M2.md`](./docs/plan-M2.md)、
   [`docs/plan-M1.md`](./docs/plan-M1.md)、[`docs/plan-M0.md`](./docs/plan-M0.md)
@@ -37,6 +37,11 @@ fnm exec --using=22 -- npm run spike:pi   # Pi SDK 闭环（离线 mock LLM，�
   （`/api/tournaments`）；plan 见 [`docs/plan-M4.md`](./docs/plan-M4.md)。
 - **arena-blitz（M5）**：单房 1v1 镜像歼灭（W15N15 + 东邻镜像，150ms tick × 2000 预算，
   歼灭/击杀分结算，Agent live 热更）；plan 见 [`docs/plan-M5.md`](./docs/plan-M5.md)。
+- **回放与战报（M6）**：`MatchRecorder`（append-only JSONL，`dataDir/replays/`，meta/idmap/
+  frame/mark/end 版本化行）+ `ReplayStore`（stat+mtime 失效缓存、LRU 4、404/partial 语义）
+  + `GET /api/replays/:matchId`（`?frames=none`/`?from=&to=`）+ 前端战报区（summary/曲线/
+  击杀时间线/SVG + 回放器滑动播放）。mod 侧 enrich 补 `objectInfo/targetInfo`（x/y/type/via，
+  只加字段——结算/公平面零改动）；plan 见 [`docs/plan-M6.md`](./docs/plan-M6.md)。
 - **真实私服**：`src/server/screeps/`（ScreepsService 七面 + arena-mod 平移裁剪 +
   RealArena fog 过滤）——bare-metal，`npm run test:live` 验证。
 - **HTTP/WS 桥**：`src/server/http/`（路由纯函数打表 + 对局驱动器 + Fastify 壳 + WS 推送）。

@@ -1,5 +1,89 @@
 # 工程日志（倒序）
 
+## 2026-09-15 M6 回放与战报（replay + battle report）实施完成
+
+**目标**：每局（含已结束历史局）可查战报（结算/击杀时间线/人口曲线），浏览器内按采样帧
+拖动播放地图上的单位位置与战斗标记。
+
+**实施**（plan-M6 S0–S7，v5）：
+- **S0 探针**（`scripts/s6-replay-probe.ts`，一次性，S7 已按计划删除）：真实私服双相位实测——
+  `--phase=ring` 4/4（**eventsByRoom 键 = 房名**；`eventLog(cursor)` 恒空 ⇒「饱和即停投」结构
+  证明；越界 `since` 回退 0；roomObjects 单房 3.6/2.8ms ≈ 330B/5 对象）；`--phase=enrich` 4/4
+  （enrich 命中 live 8 / ruin 4、type creep 6 / spawn 6、infoMissing 0；DESTROYED `data.type`
+  原生携带）。首跑踩坑：M5 版 bot 同房 `FIND_HOSTILE_SPAWNS` 永不见敌 → 0 DESTROYED；且
+  `createUser` 给 controller 20000 tick safe mode 免疫 —— 探针改为跨房对撞 + `clearSafeMode`
+  后才产出战斗样本。
+- **S1 mod enrich + 归因明细**：`resolveEventUsers` 顺路产出 `objectInfo/targetInfo`
+  = `{x,y,type,via}`（via 兜底链 live→tombstone→ruin；type 分别取文档 `type`/'creep'/
+  `structure.type`，全 miss → null）；只加字段，`attributeTick` 归因结果不变（回归测试钉住）。
+  新增 `attributeTickDetailed` + `KillLedger.consume` 返回 `{tick,objectId,attribution}` 明细
+  （向后兼容：既有调用忽略返回值）。mod `eventLog` 应答补 `ringCapacity`。
+- **S2 记录器**：`MatchRecorder`（append-only JSONL；meta/idmap/mark/frame/end 版本化；
+  **混跑按事件所在键 ∈ 本局房间过滤**；(tick,objectId) 去重（防御）；positions 软上限降频
+  ×4 阶梯 + `samplingThrottled` mark；恢复续写 + `recovered` mark）。接线：arena 侧复用
+  `observeArenaMatch` 同一消费点（明细 + 同拍 world，零额外 getWorld）；world 侧 driver 新增
+  `worldObserve` option（**相位门控 `form==='world' && phase==='running'`**，注入函数内
+  `REPLAY_SAMPLE_MS=1000` 节流——未到点不取数）；settle 写 end 行后清 recorder 三容器。
+- **S3 查询面**：`ReplayStore`（stat+size/mtime 失效缓存，LRU 4；残行/未知 kind 跳过；
+  404 = 缺文件/空文件/坏 meta；无 end 行 = `partial`；`incompleteAfterRestart` ← `recovered`；
+  `eventsIncomplete` ← `eventRingSaturated`）；`GET /api/replays/:matchId`（`?frames=none`、
+  `?from=&to=`）；`/api/history` 逐行标注 `replay`（O(1) 存在性判定——避免每 5s 轮询 N×整读）。
+- **S4/S5 前端**：`src/client/replay.tsx`——BattleReport（summary 表 + SVG 计分曲线 +
+  击杀时间线 + 角标）、ReplayPlayer/ReplayCanvas（受控；滑条/播放/1×/4×/16×；**位置保持**：
+  kills-only 帧沿用最近一次位置采样，不闪空；击杀有坐标画点、缺坐标画房级色带）；
+  历史表行「战报」按钮（文件缺失禁用 + tooltip）；详情页内嵌战报区（running 3s 轮询
+  `?frames=none`）。DTO 全部收进 `shared/types.ts`（前后端同源）。
+- **S7**：compose 第 6 卷 `arena-replays` + main.ts 数据布局注；README/AGENTS/TEST.md 同步；
+  一次性探针与 npm script 清理。
+
+**验证基线（全部实测）**：单测 **214/214**（33 文件，M5 基线 181）+ typecheck/build 零错
++ `spike:pi` 全绿；**test:live 10/10**（M6 增补：真实短局记录器全链——真实 eventLog/enrich
+喂入 recorder → JSONL → ReplayStore 断言 meta/idmap/frames>0/位置采样/击杀数=账本/体积<32MB）；
+m2-smoke **13 步全绿**；**真实 qwen 验收局**（直建 arena maxTicks=600）→ 双 Agent 交码
+（含 ERR 自修）→ directStarter 自动开局 → ticksExhausted 结算（draw m6a 103 : m6b 100）→
+战报 181 帧 + 曲线 + 回放 seek/播放浏览器实测（截图留档 TEST.md §0.11）。
+
+**真实链路暴露并修复 1 洞**：`GET /api/replays/:id` 只在纯函数打表（routes.ts）有路由，
+Fastify 壳（server.ts）是**逐路由显式注册**——壳未挂 → 404。已补壳注册，并把「壳级路由覆盖」
+写进 `http-server.it.test.ts`（真实 listen + fetch，4/4 绿）。教训：新增 HTTP 面时，纯函数
+打表测试通过 ≠ 线上可达；壳注册必须有独立 IT。
+
+**M6 验收后补测试基建 2 处**（复现 M6 验证时暴露，v1 报告后追加）：
+① **m2-smoke 私服复用**——冷装私服（npm install + isolated-vm native 编译）≈13 分钟，
+超过脚本 10 分钟就绪窗口 → 每次必挂（本次复现连续 2 次 FAIL，非代码回归）。改用「预装模板
++ reflink 克隆」：安装器本就有指纹门（`node_modules/.screeps-arena-server.json` 匹配即
+`npm install skipped`）与 runtime 幂等 marker，故把模板 `cp -a --reflink=auto` 进 `$DATA`
+（btrfs CoW，412MB/0.9s；写入不回污染模板）；模板缺失自愈（`--install-only` 冷装一次）；
+模板内不留 `db.json`（每 run 从 `db.original.json` 重播干净世界）。`$DATA` 迁出 `/tmp`
+（tmpfs 不支持 reflink 且重启即失——正是原先每次重装的根因）。实测 **13/13 PASS，76s**
+（冷装版 698s 且全靠放宽窗口才通过）。
+② **main.ts 优雅关停补 SIGTERM**——私服跑在 detached 进程组，回收只有两条路：`svc.shutdown()`
+或 service 的 `process.on('exit')` guard；而 **SIGTERM 默认处置由 OS 直接终止进程、不触发 JS
+'exit'** → 原先只挂 SIGINT，任何 SIGTERM 退出（m2-smoke 的 `pkill`、`docker stop`、systemd）
+都把 runner/storage/engine 留成孤儿（实测一次 smoke 漏 4–8 个，多次累计 50+）。现
+SIGINT/SIGTERM 共用优雅路径（停驱动/调度 → `svc.shutdown()`（pause → autosave 10.5s →
+SIGTERM 进程组 → SIGKILL，20s 上界兜底）→ 关 HTTP → exit），`shuttingDown` 防重入；
+脚本侧 `pkill` 后改为等旧进程真正退出（优雅关停最长 ≈19s，固定 `sleep 3` 会撞 8899 端口）。
+实测跑后孤儿 **0**。验证：`npm test` 214/214 + typecheck/build 零错 + smoke 13/13。
+
+**审查闭环**：一审由独立审查者按 plan-M6 D1–D7 + AGENTS 公平红线核对（提供离线源码切片，
+避免其文件读取路径的串行异常；期间两次子代理因 provider 退化失败已放弃，改用最强模型复核），
+结论 **PASS**——D1 单飞消费点/房名过滤/world 门控/节流位置/清理、D2 阶梯降频与 mark、
+D3 append-only+恢复续写、D4 缓存与 404/partial/角标派生/纯打表/壳注册、D5 enrich 只加字段
+逐项核对通过。非阻塞 5 条，逐条核实后落实 2 条真问题：① `ReplayStore.has` 补空文件判定
+（崩在首行前 → 入口禁用，与 get() 的 404 一致），避免历史表按钮与战报页不一致；
+② 回放路由 `?from/to` 数值校验（NaN 会静默裁成空集 → 显式 400）。其余 3 条为「素材未含
+该片段」的未能验证项，实读代码确认实现正确（disposeRecorder 覆盖三容器、positionsIfDue
+开头 early-return、parseReplay 的 break 属 switch 分支）；`enforceSoftLimit` 每帧 statSync
+为有意的成本取舍（单文件 stat，保住溢出即降的时效性），登记为已知取舍。
+
+**遗留登记（本计划不修，沿用 plan-M6 §5）**：① arenaLedgers/arenaStartGameTime/
+arenaOverflowWarned 三容器 settle 后仍不清理（M5 既有缓慢泄漏，量级=局数 × 小对象）；
+② eventLog ring 饱和后事件停投（M5 既有行为；可见面由 summary `eventsIncomplete` 覆盖，
+根治需 mod 环形序号 + 缺口 manifest，另立里程碑）；③ ReplayStore 对 running 局整读整解析
+（可选优化：按行增量解析，若真机轮询开销超预期再启用）；④ world 局帧不含 kills（world 侧无
+host 事件游标消费点；R5「不做第二游标」的直接结论）。
+
 ## 2026-09-14 M6 前浏览器实测：全链验收绿 + 实测暴露三洞修复（审查闭环 PASS）
 
 **背景**：M2–M5 的前端改动（锦标赛表/form 标签/详情页/恢复）自 M1 后从未浏览器实测。

@@ -6,7 +6,7 @@
  * 跑法：fnm exec --using=22 -- npm run test:live（默认 npm test 不含）。
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { existsSync, mkdtempSync, readFileSync, rmSync, appendFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, appendFileSync, statSync } from 'node:fs'
 import { execSync, spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -23,6 +23,9 @@ import { KillLedger, arenaSettleDecision, ticksExhaustedDecision } from '../src/
 import { TournamentScheduler } from '../src/server/tournament/scheduler.js'
 import { tournamentFinished } from '../src/server/tournament/types.js'
 import { MatchHistory } from '../src/server/history.js'
+import { MatchRecorder } from '../src/server/match/recorder.js'
+import type { ReplayObject } from '../src/server/match/recorder.js'
+import { ReplayStore } from '../src/server/replay/store.js'
 import { recoverPendingTeardowns } from '../src/server/teardown.js'
 import { fileURLToPath } from 'node:url'
 
@@ -572,4 +575,156 @@ module.exports.loop = function () {
       rmSync(dataDirK, { recursive: true, force: true })
     }
   }, 900_000)
+
+  it('M6：真实短局记录器全链——mod enrich 落帧 → append-only JSONL → ReplayStore 查询面（含体积）', async () => {
+    await svc.ensureRunning()
+    const arena = new RealArena(svc, {
+      rooms: {},
+      spawnCoords: { b1: { x: 25, y: 25 }, b2: { x: 24, y: 25 } },
+      log: (m) => console.log('[arena]', m),
+    })
+    // 跨房对撞 bot（M5 版同房 find 永不见敌）：拆家产 DESTROYED → enrich 的 tombstone/ruin 兜底被走到
+    const bot = (enemy: string): { main: string } => ({
+      main: `
+module.exports.loop = function () {
+  const ENEMY = '${enemy}'
+  for (const s of Object.values(Game.spawns)) {
+    if (!s.spawning && s.store.energy >= 150) s.spawnCreep([ATTACK, ATTACK, MOVE, MOVE], 'r' + Game.time + '_' + s.id.slice(-3))
+  }
+  for (const c of Object.values(Game.creeps)) {
+    if (c.room.name !== ENEMY) { c.moveTo(new RoomPosition(25, 25, ENEMY)); continue }
+    const hostiles = c.room.find(FIND_HOSTILE_CREEPS).concat(c.room.find(FIND_HOSTILE_SPAWNS)).concat(c.room.find(FIND_HOSTILE_STRUCTURES))
+    if (hostiles.length) { const t = hostiles[0]; if (c.attack(t) !== OK) c.moveTo(t) }
+  }
+}`,
+    })
+    void arena.prepareArena()
+    arena.assignRoom('b1', 'W15N15')
+    arena.assignRoom('b2', 'W14N15')
+    const m = new MatchMachine({
+      players: [
+        { seatId: 'b1', username: 'b1' },
+        { seatId: 'b2', username: 'b2' },
+      ],
+      config: { ...configFromPreset('arena-blitz'), maxTicks: 300 },
+    })
+    for (const [seat, enemy] of [['b1', 'W14N15'], ['b2', 'W15N15']] as const) await arena.bindUser(seat, bot(enemy))
+    // 战斗前置：createUser 的 20000 tick safe mode 免疫必须清（S0 探针实测：不清则 0 DESTROYED）
+    await svc.system('clearSafeMode', 'W15N15')
+    await svc.system('clearSafeMode', 'W14N15')
+    m.submitCode('b1', bot('W14N15'))
+    m.submitCode('b2', bot('W15N15'))
+    m.start()
+    await svc.system('resume')
+
+    const replayDir = mkdtempSync(join(tmpdir(), 'm6-replay-'))
+    const recorder = new MatchRecorder({
+      dir: replayDir,
+      matchId: 'm6live',
+      form: 'arena',
+      config: m.config,
+      players: m.players.map((p) => ({ seatId: p.seatId, username: p.username })),
+      rooms: ['W15N15', 'W14N15'],
+      createdAt: Date.now(),
+    })
+    const ledger = new KillLedger()
+    const users = Object.fromEntries(m.players.map((p) => [p.seatId, arena.resolveUser(p.seatId)] as const))
+    const userIdOf = (world: { users: Array<{ id: string; username: string }> }, seat: string): string | null =>
+      world.users.find((u) => u.username === users[seat])?.id ?? null
+
+    const world0 = await svc.getWorld()
+    const startGameTime = world0.gameTime
+    let settled = false
+    let frames = 0
+    let sampleAt = 0
+    try {
+      for (let i = 0; i < 150 && !settled; i++) {
+        await new Promise((r) => setTimeout(r, 1000))
+        const raw = (await svc.system('eventLog', ledger.cursor)) as {
+          ok?: boolean
+          events?: Array<{ tick: number; eventsByRoom: Record<string, unknown[]> }>
+          cursor?: number
+        }
+        ledger.cursor = typeof raw.cursor === 'number' ? raw.cursor : ledger.cursor
+        const details = ledger.consume((raw.events ?? []) as never)
+        const world = await svc.getWorld()
+        const ids: Record<string, string | null> = {}
+        const snap: Record<string, { spawns: number; creeps: number; rooms: number; rclTotal: number }> = {}
+        const killScore: Record<string, number> = {}
+        for (const p of m.players) {
+          const u = world.users.find((x) => x.username === users[p.seatId])
+          ids[p.seatId] = u?.id ?? null
+          snap[p.seatId] = { spawns: u?.spawns ?? 0, creeps: u?.creeps ?? 0, rooms: u?.ownedRooms ?? 0, rclTotal: u?.rclTotal ?? 0 }
+          killScore[p.seatId] = ledger.score(u?.id ?? null)
+        }
+        // 位置采样按 REPLAY_SAMPLE_MS 节流（main.observeArenaMatch 同款）
+        let positions: Record<string, ReplayObject[]> | undefined
+        if (Date.now() - sampleAt >= 1000) {
+          sampleAt = Date.now()
+          positions = {}
+          for (const room of ['W15N15', 'W14N15']) {
+            const objs = (await svc.system('roomObjects', room)) as { objects: Array<Record<string, unknown>> }
+            positions[room] = objs.objects.map((o) => ({
+              type: String(o.type),
+              x: Number(o.x),
+              y: Number(o.y),
+              user: typeof o.user === 'string' ? o.user : null,
+              name: typeof o.name === 'string' ? o.name : null,
+              hits: typeof o.hits === 'number' ? o.hits : null,
+            }))
+          }
+        }
+        recorder.recordTick({
+          gameTime: world.gameTime,
+          round: 0,
+          enrichedEvents: (raw.events ?? []) as never,
+          details,
+          scores: snap,
+          userIds: ids,
+          ...(positions ? { positions } : {}),
+        })
+        frames++
+        const decision =
+          arenaSettleDecision(snap, killScore) ??
+          ticksExhaustedDecision(['b1', 'b2'], killScore, startGameTime, world.gameTime, m.config.maxTicks, snap)
+        if (decision) {
+          m.settle(decision.reason, Date.now(), decision.outcome)
+          settled = true
+        }
+      }
+      expect(settled, 'blitz 局应在预算内结算').toBe(true)
+      // 账本 → end 行
+      const ledgerCounts: Record<string, { kills: number; losses: number; decayLosses: number }> = {}
+      for (const p of m.players) ledgerCounts[p.seatId] = ledger.counts(userIdOf(await svc.getWorld(), p.seatId))
+      recorder.end({
+        settledAt: Date.now(),
+        settleReason: m.state.settleReason ?? 'manual',
+        winner: m.state.winner ?? { kind: 'draw' },
+        scores: m.state.scores ?? {},
+        ledger: ledgerCounts,
+      })
+
+      // 查询面（GET /api/replays/:matchId 的同一个 ReplayStore）
+      const store = new ReplayStore(replayDir)
+      const view = store.get('m6live')!
+      expect(view.meta.matchId).toBe('m6live')
+      expect(view.meta.rooms).toEqual(['W15N15', 'W14N15'])
+      expect(view.summary.partial).toBe(false) // end 行已落
+      expect(view.summary.frames).toBeGreaterThan(0)
+      expect(view.frames!.length).toBeGreaterThan(0)
+      expect(view.frames!.some((f) => f.positions !== undefined)).toBe(true) // 位置采样非空
+      expect(view.summary.players.every((p) => p.screepsUserId !== null)).toBe(true) // idmap 惰性补写生效
+      // kills 与 KillLedger 一致：时间线中有击杀方的条目数 = 账本 kills 合计
+      const ledgerKills = Object.values(ledgerCounts).reduce((a, c) => a + c.kills, 0)
+      expect(view.summary.killTimeline.filter((k) => k.killer !== null)).toHaveLength(ledgerKills)
+      // 体积上界（D2 软上限）
+      expect(statSync(recorder.file).size).toBeLessThan(32 * 1024 * 1024)
+      console.log(
+        `[m6] replay: frames=${frames} fileBytes=${statSync(recorder.file).size} kills=${view.summary.killTimeline.length} settle=${m.state.settleReason}`,
+      )
+      for (const p of m.players) await arena.releaseSeat(p.seatId).catch(() => {})
+    } finally {
+      rmSync(replayDir, { recursive: true, force: true })
+    }
+  }, 600_000)
 })

@@ -14,6 +14,7 @@
  *   journal/matches/   = 对局 journal（相位迁移原子落盘，启动扫描恢复，M2/S5）
  *   history/           = 对局历史 jsonl（记账全量 + teardown 状态，M3/S4）
  *   agents/            = 席位工作区（seatSlug 目录，M2/S7）
+ *   replays/           = 回放 JSONL（append-only，M6/D1；查询面 GET /api/replays/:matchId）
  *
  * M3（plan-M3）：多活跃对局——createMatch 守卫 = 房间池可容纳（可用池 = ROOM_POOL −
  * roomsSnapshot 在占，含 journal 恢复局）；settle → history(pending) → journal.remove →
@@ -47,7 +48,11 @@ import { TournamentScheduler, initialPromptText } from './tournament/scheduler.j
 import { computeOutcome } from './match/score.js'
 import type { SeatScoreInput } from './match/score.js'
 import { KillLedger, arenaSettleDecision, ticksExhaustedDecision } from './match/arena-observe.js'
-import type { ArenaSettleDecision } from './match/arena-observe.js'
+import type { ArenaSettleDecision, KillDetail } from './match/arena-observe.js'
+import { MatchRecorder } from './match/recorder.js'
+import type { ReplayObject } from './match/recorder.js'
+import { ReplayStore } from './replay/store.js'
+import type { EventTick } from './match/attribution.js'
 import { AgentRunner } from '../agent/runner.js'
 import type { AgentProviderConfig } from '../agent/runner.js'
 import { buildSeatTools } from '../agent/tools.js'
@@ -123,6 +128,8 @@ const driver = new MatchDriver({
   scoreSnapshot: (m) => scoreSnapshotFor(m.players.map((p) => p.seatId)),
   // M5/D5（B2 新增件）：arena 局 running 期结算观察（歼灭/双淘汰/maxTicks）
   arenaObserve: (m) => observeArenaMatch(m),
+  // M6/S2：world 局 running 期回放采样（相位门控在 driver 侧；函数内自带采样节流）
+  worldObserve: (m) => observeWorldMatch(m),
 })
 const arena = new RealArena(svc, { rooms: {}, log: (m) => console.log('[arena]', m) })
 
@@ -158,6 +165,86 @@ async function scoreSnapshotFor(seatIds: string[]): Promise<Record<string, SeatS
   return snap
 }
 
+/* ---------------- M6/S2 回放记录（recorder，plan-M6 D1/D2） ---------------- */
+
+/** 位置采样节拍（墙钟 ms，D2）：500ms 驱动节拍下实际每 2 拍一帧。 */
+const REPLAY_SAMPLE_MS = 1000
+const replayDir = path.join(dataDir, 'replays')
+/** 回放查询面（S3）：stat+mtime 失效缓存，LRU 4。 */
+const replayStore = new ReplayStore(replayDir)
+/** matchId → 记录器（settle 后删；不照抄 M5 三容器的无清理泄漏）。 */
+const replayRecorders = new Map<string, MatchRecorder>()
+/** matchId → 上次位置采样墙钟（节流）。 */
+const replayLastSample = new Map<string, number>()
+/** matchId → 最近一拍的 seatId→userId（settle 时 end 行账本/映射反查）。 */
+const replayUserIds = new Map<string, Record<string, string | null>>()
+
+/** 本局房间集合（arena = 固定镜像双房；world = 房间池分配）。 */
+function replayRoomsFor(m: MatchMachine): string[] {
+  if (m.config.form === 'arena') return [ARENA_BASE_ROOM, arenaMirrorRoom(ARENA_BASE_ROOM)]
+  const snap = arena.roomsSnapshot()
+  return m.players.map((p) => snap[p.seatId]).filter((r): r is string => typeof r === 'string')
+}
+
+function replayRecorderFor(m: MatchMachine, recovered = false): MatchRecorder {
+  let rec = replayRecorders.get(m.id)
+  if (!rec) {
+    rec = new MatchRecorder({
+      dir: replayDir,
+      matchId: m.id,
+      form: m.config.form,
+      config: m.config,
+      players: m.players.map((p) => ({ seatId: p.seatId, username: p.username })),
+      rooms: replayRoomsFor(m),
+      createdAt: m.state.createdAt,
+      ...(recovered ? { recovered: true } : {}),
+    })
+    replayRecorders.set(m.id, rec)
+  }
+  return rec
+}
+
+/** seatId → Screeps userId（world.users 反查；未绑定 null）。 */
+function replayUserIdsFor(m: MatchMachine, world: { users: Array<{ id: string; username: string }> }): Record<string, string | null> {
+  const out: Record<string, string | null> = {}
+  for (const p of m.players) {
+    const username = arena.resolveUser(p.seatId)
+    out[p.seatId] = world.users.find((u) => u.username === username)?.id ?? null
+  }
+  return out
+}
+
+/** 位置采样（仅到点调用）：roomObjects 全房投影 → ReplayObject[]。 */
+async function samplePositions(m: MatchMachine): Promise<Record<string, ReplayObject[]>> {
+  const out: Record<string, ReplayObject[]> = {}
+  for (const room of replayRoomsFor(m)) {
+    const raw = (await svc.system('roomObjects', room)) as { objects: Array<Record<string, unknown>> }
+    out[room] = raw.objects.map((o) => ({
+      type: String(o.type),
+      x: Number(o.x),
+      y: Number(o.y),
+      user: typeof o.user === 'string' ? o.user : null,
+      name: typeof o.name === 'string' ? o.name : null,
+      hits: typeof o.hits === 'number' ? o.hits : null,
+    }))
+  }
+  return out
+}
+
+/** 到点则采样（返回 positions；未到点 undefined——world 侧同样靠此节流不取数）。 */
+async function positionsIfDue(m: MatchMachine, now: number): Promise<Record<string, ReplayObject[]> | undefined> {
+  if (now - (replayLastSample.get(m.id) ?? 0) < REPLAY_SAMPLE_MS) return undefined
+  replayLastSample.set(m.id, now)
+  return samplePositions(m)
+}
+
+/** recorder 生命周期收尾（settle 挂点）：删本计划新增的三容器（D1 v4）。 */
+function disposeRecorder(m: MatchMachine): void {
+  replayRecorders.delete(m.id)
+  replayLastSample.delete(m.id)
+  replayUserIds.delete(m.id)
+}
+
 /* ---------------- M5/D5 arena 结算观察（B2 新增件） ---------------- */
 
 /** matchId → 击杀账本（观察游标 host 侧独立，n2——不与 report 的 per-user 游标共享 ring）。 */
@@ -166,17 +253,21 @@ const arenaLedgers = new Map<string, KillLedger>()
 const arenaStartGameTime = new Map<string, number>()
 /** [N4] 溢出警告去重（每局最多记一次）。 */
 const arenaOverflowWarned = new Set<string>()
+/** matchId → 最后成功收到的事件 tick（R4 缺口定位；settle 清理）。 */
+const arenaLastEventTick = new Map<string, number>()
 
 /** arena 局结算观察（driver 每 500ms 调用）：事件增量消费 → 归因 → world 快照 →
- *  歼灭/双淘汰（lastStanding）或 maxTicks（ticksExhausted）决策；无决策返回 undefined。 */
+ *  歼灭/双淘汰（lastStanding）或 maxTicks（ticksExhausted）决策；无决策返回 undefined。
+ *  M6/S2：同一消费点顺路喂 recorder（复用 ledger 明细 + 同拍 world，零额外 getWorld）。 */
 async function observeArenaMatch(m: MatchMachine): Promise<ArenaSettleDecision | undefined> {
   const ledger = arenaLedgers.get(m.id) ?? new KillLedger()
   arenaLedgers.set(m.id, ledger)
   const raw = (await svc.system('eventLog', ledger.cursor)) as {
     ok?: boolean
-    events?: Array<{ tick: number; eventsByRoom: Record<string, unknown[]> }>
+    events?: EventTick[]
     cursor?: number
     bound?: boolean
+    ringCapacity?: number
     error?: string
   }
   if (raw.ok !== true) throw new Error(`eventLog failed: ${String(raw.error ?? 'unknown')}`)
@@ -184,25 +275,71 @@ async function observeArenaMatch(m: MatchMachine): Promise<ArenaSettleDecision |
     arenaOverflowWarned.add(m.id)
     m.state.errors.push('event ring overflow detected (bound:false) — kill scores may be underestimated')
     console.log(`[arena] ${m.id}: event ring overflow — kill scores may be underestimated`)
+    // R4：饱和即停投——mark 记下 ring 水位与最后收到的事件 tick（缺口可定位）
+    replayRecorderFor(m).mark({
+      at: Date.now(),
+      type: 'eventRingSaturated',
+      ringCapacity: raw.ringCapacity,
+      lastEventTick: arenaLastEventTick.get(m.id),
+    })
   }
   // 一审阻塞 1：游标 = eventLog 返回的 ring 下标（非 tick 数值——见 KillLedger.cursor 注释）
   ledger.cursor = typeof raw.cursor === 'number' ? raw.cursor : ledger.cursor
-  ledger.consume((raw.events ?? []) as Parameters<typeof ledger.consume>[0])
+  const batch = raw.events ?? []
+  const details = ledger.consume(batch)
+  for (const t of batch) if ((t.tick ?? -1) > (arenaLastEventTick.get(m.id) ?? -1)) arenaLastEventTick.set(m.id, t.tick)
   const world = await svc.getWorld()
   const snap = await scoreSnapshotFor(m.players.map((p) => p.seatId))
   // seatId → Screeps user id（归因键）
   const killScore: Record<string, number> = {}
+  const userIds = replayUserIdsFor(m, world)
   for (const p of m.players) {
-    const username = arena.resolveUser(p.seatId)
-    const u = world.users.find((x) => x.username === username)
-    killScore[p.seatId] = ledger.score(u?.id ?? null)
+    killScore[p.seatId] = ledger.score(userIds[p.seatId] ?? null)
   }
+  // M6/S2：回放帧（同拍 world 复用；positions 按 REPLAY_SAMPLE_MS 节流）
+  replayUserIds.set(m.id, userIds)
+  const positions = await positionsIfDue(m, Date.now())
+  replayRecorderFor(m).recordTick({
+    gameTime: world.gameTime,
+    round: m.state.roundIndex,
+    enrichedEvents: batch,
+    details,
+    scores: snap,
+    userIds,
+    ...(positions ? { positions } : {}),
+  })
   const seats = m.players.map((p) => p.seatId)
   const decision = arenaSettleDecision(snap, killScore)
   if (decision) return decision
   const start = arenaStartGameTime.get(m.id)
   if (start === undefined) return undefined // started 事件尚未带回 gameTime 基线
   return ticksExhaustedDecision([seats[0]!, seats[1]!], killScore, start, world.gameTime, m.config.maxTicks, snap)
+}
+
+/** world 局回放采样（driver 每 500ms 调用，phase==='running' 门控在 driver 侧）：
+ *  注入函数内节流（未到采样点直接 return，不调 getWorld——R1）；一次 getWorld 同时供
+ *  scores/userIds 用。world 侧无 host 事件游标消费点，帧不含 kills（R5 不做第二游标）。 */
+async function observeWorldMatch(m: MatchMachine): Promise<void> {
+  const now = Date.now()
+  if (now - (replayLastSample.get(m.id) ?? 0) < REPLAY_SAMPLE_MS) return
+  replayLastSample.set(m.id, now)
+  const world = await svc.getWorld()
+  const ids = replayUserIdsFor(m, world)
+  const scores: Record<string, SeatScoreInput> = {}
+  for (const p of m.players) {
+    const u = world.users.find((x) => x.id === ids[p.seatId])
+    scores[p.seatId] = { spawns: u?.spawns ?? 0, creeps: u?.creeps ?? 0, rooms: u?.ownedRooms ?? 0, rclTotal: u?.rclTotal ?? 0 }
+  }
+  replayUserIds.set(m.id, ids)
+  replayRecorderFor(m).recordTick({
+    gameTime: world.gameTime,
+    round: m.state.roundIndex,
+    enrichedEvents: [],
+    details: [],
+    scores,
+    userIds: ids,
+    positions: await samplePositions(m),
+  })
 }
 
 function toRecord(m: MatchMachine): MatchJournalRecord {
@@ -287,6 +424,10 @@ function wireMachine(m: MatchMachine): (e: MatchEvent) => void {
   return (e) => {
     void driver.onEvent(m, e)
     broadcast({ type: 'match_state', match: m.id, phase: m.phase, roundIndex: m.state.roundIndex, event: e.type })
+    // M6/S2：回放 mark 行（两 form 共用；recorder 惰性建——'started' 时落 meta）
+    if (e.type === 'started') replayRecorderFor(m).mark({ at: Date.now(), type: 'started', round: e.round })
+    else if (e.type === 'round_break') replayRecorderFor(m).mark({ at: Date.now(), type: 'roundBreak', round: e.round })
+    else if (e.type === 'round_resume') replayRecorderFor(m).mark({ at: Date.now(), type: 'resume', round: e.round })
     // M5/D5：arena 局 started 时记录 gameTime 基线（maxTicks 起算点，不假设归零），
     // 并解除 prepareArena 的 paused（双席建号已在 paused 世界完成——防 Invader 抢注）
     if (e.type === 'started' && m.config.form === 'arena' && !arenaStartGameTime.has(m.id)) {
@@ -307,6 +448,27 @@ function wireMachine(m: MatchMachine): (e: MatchEvent) => void {
         history.upsert(snap)
         journal.remove(m.id)
         machines.delete(m.id) // 不占坑：settle 后允许再建局
+        // M6/S2：end 行（账本按 seat 归属）+ 记录器容器清理（D1 v4：不扩 M5 泄漏）
+        const rec = replayRecorders.get(m.id)
+        if (rec) {
+          const led = arenaLedgers.get(m.id)
+          const ids = replayUserIds.get(m.id) ?? {}
+          const ledgerCounts: Record<string, { kills: number; losses: number; decayLosses: number }> = {}
+          for (const p of m.players) {
+            ledgerCounts[p.seatId] = led ? led.counts(ids[p.seatId] ?? null) : { kills: 0, losses: 0, decayLosses: 0 }
+          }
+          rec.mark({ at: Date.now(), type: 'settled', reason: m.state.settleReason, winner: m.state.winner, scores: m.state.scores })
+          rec.end({
+            settledAt: m.state.settledAt ?? Date.now(),
+            settleReason: m.state.settleReason ?? 'manual',
+            winner: m.state.winner ?? { kind: 'draw' },
+            scores: m.state.scores ?? {},
+            ledger: ledgerCounts,
+            userIds: ids,
+          })
+        }
+        disposeRecorder(m)
+        arenaLastEventTick.delete(m.id)
         void teardownMatch(m, snap).catch((err) => {
           // 成果审查非阻塞 6：markDone 的同步 fs 抛错不能成为 unhandled rejection
           teardownFailuresList.push({ matchId: m.id, seatId: '*', error: `teardown finalize: ${String(err)}`, at: Date.now() })
@@ -539,6 +701,9 @@ const services: ArenaHttpServices = {
   getScoreSnapshot: scoreSnapshotFor,
   history: () => history.list(),
   teardownFailures: () => [...teardownFailuresList],
+  // M6/S3：回放只读查询面（文件 IO/解析/缓存独立模块，routes 保持纯打表）
+  replay: (id, opts) => replayStore.get(id, opts),
+  replayExists: (id) => replayStore.has(id),
 }
 
 /** journal 恢复扫描（M2/S5）：映射灌回 → 机器重建 → driver.watch；roundBreakSince 重置为恢复时刻。 */
@@ -575,6 +740,8 @@ function restoreFromJournal(): number {
     m.state.errors.push(`interrupted recovery: restored at phase ${rec.state.phase} round ${rec.state.roundIndex}`)
     machines.set(m.id, m)
     driver.watch(m, wakers)
+    // M6/S2：恢复局续写既有回放文件 + 补 'recovered' mark（D3；文件不存在则补 meta）
+    replayRecorderFor(m, true)
     console.log(`[journal] restored match ${m.id} at phase ${m.phase} round ${m.state.roundIndex} (interrupted recovery)`)
     // 审查非阻塞 1：恢复的 arena 局不会再触发 started → 在此补 maxTicks 基线
     //（restoreFromJournal 在 listen 前同步执行，不会与 observe 竞争）
@@ -661,11 +828,30 @@ console.log(
   `[main] http://${HOST}:${handle.port} data=${dataDir} (real world; wake=${provider ? `real ${MODEL}` : 'disabled'}; journal-restored=${restored}; tournaments-recovered=${tournamentsRecovered})`,
 )
 
-process.on('SIGINT', async () => {
+// 收到信号：先停驱动/调度（不再产生新工作）→ 优雅关停私服（pause → autosave 窗口 →
+// SIGTERM 进程组 → SIGKILL，见 server-launcher.stop）→ 关 HTTP → 退出。
+// M6 后补（踩坑修复）：私服是 detached 进程组，回收只靠两条路——svc.shutdown()，或
+// service 装的 process 'exit' guard（同步 SIGKILL 进程组）。而 **SIGTERM 的默认处置是
+// OS 直接终止进程，不触发 JS 'exit' 事件** → 原先只挂 SIGINT 时，任何 SIGTERM 退出
+// （m2-smoke 的 pkill、docker stop、systemd）都会把私服 runner/storage/engine 留成孤儿
+// 继续占内存与端口（实测一次 smoke 漏 4–8 个）。故 SIGINT/SIGTERM 共用同一优雅路径；
+// shuttingDown 防重入（连发两个信号不双跑）。
+let shuttingDown = false
+async function shutdown(): Promise<void> {
+  if (shuttingDown) return
+  shuttingDown = true
   driver.stop()
   scheduler.stopTimers()
   clearInterval(directStarter)
   for (const r of runners.values()) r.dispose()
-  await handle.close()
-  process.exit(0)
-})
+  try {
+    // 上界兜底：stop 自身有界（autosave 10.5s + 宽限 5s + 硬等 3s），此处不无限等
+    await Promise.race([svc.shutdown(), new Promise((resolve) => setTimeout(resolve, 20_000))])
+  } catch (err) {
+    console.error('[main] shutdown: screeps server stop failed:', String(err))
+  }
+  await handle.close().catch(() => {})
+  process.exit(0) // 'exit' → service 的 exit guard 兜底 SIGKILL 进程组
+}
+process.on('SIGINT', () => void shutdown())
+process.on('SIGTERM', () => void shutdown())

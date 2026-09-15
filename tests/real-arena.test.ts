@@ -110,7 +110,17 @@ describe('RealArena（S3）', () => {
         if (cmd === 'eventLog') {
           return {
             events: [
-              { tick: 101, eventsByRoom: { E5N5: [{ event: 1, objectId: 'own1' }], E7N5: [{ event: 2, objectId: 'enemy1' }] } },
+              {
+                tick: 101,
+                eventsByRoom: {
+                  // M6 enrich 字段（objectInfo/targetInfo）在事件里——战报文本不得泄漏它们
+                  E5N5: [
+                    { event: 1, objectId: 'own1', attackerUser: 'me', objectInfo: { x: 3, y: 4, type: 'creep', via: 'live' } },
+                    { event: 2, objectId: 'own2', attackerUser: 'me', targetInfo: { x: 5, y: 6, type: 'spawn', via: 'ruin' } },
+                  ],
+                  E7N5: [{ event: 2, objectId: 'enemy1' }],
+                },
+              },
             ],
             cursor: 1,
             bound: true,
@@ -127,6 +137,10 @@ describe('RealArena（S3）', () => {
     expect(text).toContain('event tick 101 room E5N5')
     // 无视野房间 E7N5 的事件一律剥离
     expect(text).not.toContain('room E7N5')
+    // M6/D5：mod enrich 字段不进 arena.report 文本（只报存在性，不报位置/类型）
+    expect(text).not.toContain('objectInfo')
+    expect(text).not.toContain('via')
+    expect(text).not.toContain('"x"')
   })
 
   it('runConsole：官方通道 + ring 增量取回', async () => {

@@ -40,6 +40,12 @@ export interface MatchDriverOptions {
    * 决策则立即 settle（lastStanding / ticksExhausted）。抛错只记日志不中断循环。
    */
   arenaObserve?: (m: MatchMachine) => Promise<{ reason: SettleReason; outcome: { scores: Record<string, number>; winner: WinnerRef } } | undefined>
+  /**
+   * world 回放观察（M6/S2，D1）：form=world 的 running 局每拍调用一次——注入函数自带
+   * 采样节流（未到 REPLAY_SAMPLE_MS 直接 return，不取数）。相位门控钉死（v4）：缺门则
+   * roundBreak（世界暂停）期仍按墙钟写出 gameTime/坐标全同的重复帧。抛错只记日志。
+   */
+  worldObserve?: (m: MatchMachine) => Promise<void>
   /** arena 局状态唤醒周期（墙钟 ms，默认 30_000——D4：低频状态唤醒，不追 tick）。 */
   arenaStatusWakeMs?: number
   log?: (msg: string) => void
@@ -55,6 +61,7 @@ export class MatchDriver {
   private readonly wakeText: NonNullable<MatchDriverOptions['wakeText']>
   private readonly scoreSnapshot: MatchDriverOptions['scoreSnapshot']
   private readonly arenaObserve: MatchDriverOptions['arenaObserve']
+  private readonly worldObserve: MatchDriverOptions['worldObserve']
   private readonly arenaStatusWakeMs: number
   /** matchId → 上次 arena 状态唤醒墙钟（D4 节流）。 */
   private readonly arenaLastWake = new Map<string, number>()
@@ -77,6 +84,7 @@ export class MatchDriver {
       })
     this.scoreSnapshot = opts.scoreSnapshot
     this.arenaObserve = opts.arenaObserve
+    this.worldObserve = opts.worldObserve
     this.arenaStatusWakeMs = opts.arenaStatusWakeMs ?? 30_000
     this.log = opts.log ?? (() => {})
   }
@@ -158,6 +166,14 @@ export class MatchDriver {
               this.log(`arena status wake ${p.seatId} failed: ${String(err)}`)
             }
           }
+        }
+      }
+      // M6/S2：world 局回放采样（相位门控钉死——roundBreak 期世界暂停，注入即重复帧）
+      if (m.config.form === 'world' && m.phase === 'running' && this.worldObserve) {
+        try {
+          await this.worldObserve(m)
+        } catch (err) {
+          this.log(`world observe ${m.id} failed: ${String(err)}`)
         }
       }
     }

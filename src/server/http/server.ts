@@ -136,7 +136,7 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
   })
 
   // HTTP 路由 → 纯函数打表
-  const allPaths = ['/api/matches', '/api/matches/:id', '/api/matches/:id/start', '/api/matches/:id/settle', '/api/world', '/api/terrain']
+  const allPaths = ['/api/matches', '/api/matches/:id', '/api/matches/:id/start', '/api/matches/:id/settle', '/api/world', '/api/terrain', '/api/history', '/api/replays/:id']
   const routeHandler = async (req: { method: string; url: string; body?: unknown; query?: Record<string, string> }) => {
     const url = new URL(req.url, 'http://127.0.0.1')
     const arenaReq: ArenaRequest = {
@@ -182,6 +182,10 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
     return reply.code(r.status).send(r.json)
   })
   app.get('/api/history', async (req, reply) => {
+    const r = await routeHandler({ method: 'GET', url: req.url })
+    return reply.code(r.status).send(r.json)
+  })
+  app.get('/api/replays/:id', async (req, reply) => {
     const r = await routeHandler({ method: 'GET', url: req.url })
     return reply.code(r.status).send(r.json)
   })

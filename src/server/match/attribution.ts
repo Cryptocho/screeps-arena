@@ -27,12 +27,24 @@ export const EVENT_ATTACK = 1
 export const EVENT_OBJECT_DESTROYED = 2
 export const EVENT_ATTACK_TYPE_HIT_BACK = 5
 
+/** 对象位置/类型解析结果（M6/S1 mod enrich）：via = 解析来源（live/tombstone/ruin）。 */
+export interface ObjectInfo {
+  x: number
+  y: number
+  type: string
+  via: 'live' | 'tombstone' | 'ruin'
+}
+
 /** arena-mod 加工后的事件条目（eventLog 返回的 eventsByRoom 的任一事件的形状）。 */
 export interface ArenaEvent {
   event?: unknown
   objectId?: unknown
   attackerUser?: unknown
   targetUser?: unknown
+  /** objectId 的解析结果（M6 enrich；解析不到为 null）。 */
+  objectInfo?: ObjectInfo | null
+  /** data.targetId 的解析结果（M6 enrich；解析不到为 null）。 */
+  targetInfo?: ObjectInfo | null
   data?: { targetId?: unknown; damage?: unknown; attackType?: unknown }
 }
 
@@ -66,12 +78,24 @@ function attackerSide(ev: ArenaEvent): string | null {
   return userIdOf(ev.attackerUser)
 }
 
+/** 带对象 id 的归因条目（M6/S1：recorder 需要 (tick, objectId) 关联事件位置/类型）。 */
+export interface DetailedAttribution {
+  /** 被毁对象 id（eventLog DESTROYED 的 objectId；无 id 时为 null）。 */
+  objectId: string | null
+  attribution: DestroyedAttribution
+}
+
 /**
  * 归因一个 tick 的全部事件（拍平 eventsByRoom；攻击与其致死目标必在同房间同 tick，
  * 目标 id 全局唯一，跨房匹配不会误配）。
  * 返回该 tick 内每条 DESTROYED 的归因；无 DESTROYED 返回空数组。
  */
 export function attributeTick(events: ArenaEvent[]): DestroyedAttribution[] {
+  return attributeTickDetailed(events).map((d) => d.attribution)
+}
+
+/** 同 attributeTick，但保留每条结论对应的被毁对象 id（顺序与 DESTROYED 事件序一致）。 */
+export function attributeTickDetailed(events: ArenaEvent[]): DetailedAttribution[] {
   const attacksByTarget = new Map<string, ArenaEvent[]>()
   for (const ev of events) {
     if (ev.event !== EVENT_ATTACK) continue
@@ -82,19 +106,19 @@ export function attributeTick(events: ArenaEvent[]): DestroyedAttribution[] {
     attacksByTarget.set(targetId, list)
   }
 
-  const out: DestroyedAttribution[] = []
+  const out: DetailedAttribution[] = []
   for (const ev of events) {
     if (ev.event !== EVENT_OBJECT_DESTROYED) continue
     const destroyedId = typeof ev.objectId === 'string' ? ev.objectId : null
     const owner = userIdOf(ev.attackerUser)
     if (destroyedId === null) {
       // 无 id 的 DESTROYED 无法归因（核对用）
-      out.push({ ownerUserId: owner, killerUserId: null, combat: false })
+      out.push({ objectId: null, attribution: { ownerUserId: owner, killerUserId: null, combat: false } })
       continue
     }
     const matched = attacksByTarget.get(destroyedId)
     if (!matched || matched.length === 0) {
-      out.push({ ownerUserId: owner, killerUserId: null, combat: false })
+      out.push({ objectId: destroyedId, attribution: { ownerUserId: owner, killerUserId: null, combat: false } })
       continue
     }
     // 多命中去重：取伤害最大者，平手取最后出现的（从后往前扫，严格大于才替换）
@@ -108,7 +132,10 @@ export function attributeTick(events: ArenaEvent[]): DestroyedAttribution[] {
         best = candidate
       }
     }
-    out.push({ ownerUserId: owner, killerUserId: best ? attackerSide(best) : null, combat: true })
+    out.push({
+      objectId: destroyedId,
+      attribution: { ownerUserId: owner, killerUserId: best ? attackerSide(best) : null, combat: true },
+    })
   }
   return out
 }

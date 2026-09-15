@@ -11,14 +11,24 @@
  *   - ring 溢出（bound:false）→ 局 errors 警告（击杀分可能低估），不中断对局（[N4]）。
  * 纯逻辑 + 显式依赖注入，不碰网络；测试打表。
  */
-import { attributeTick } from './attribution.js'
-import type { ArenaEvent, EventTick } from './attribution.js'
+import { attributeTickDetailed } from './attribution.js'
+import type { ArenaEvent, DestroyedAttribution, EventTick } from './attribution.js'
 import { isDefeated } from './score.js'
 import type { SeatScoreInput } from './score.js'
 import type { SettleReason, WinnerRef } from './model.js'
 
 /** eventLog 单 tick 条目（与 attribution 共享形状）。 */
 export type { EventTick, ArenaEvent }
+
+/**
+ * 一条 DESTROYED 归因明细（M6/S1，recorder 用）：tick + 被毁对象 id + 归因。
+ * room 不在此（明细拍平了 eventsByRoom）——由调用方按 (tick, objectId) 回指事件所在键。
+ */
+export interface KillDetail {
+  tick: number
+  objectId: string | null
+  attribution: DestroyedAttribution
+}
 
 /** 击杀账本：按 Screeps user id 累积 kills/losses/decayLosses；游标单飞归属观察侧。 */
 export class KillLedger {
@@ -36,24 +46,28 @@ export class KillLedger {
   /** 溢出标记（[N4]）：消费序列里出现过 bound:false → 击杀分可能低估。 */
   overflow = false
 
-  /** 消费一批 eventLog tick（拍平 eventsByRoom → 归因 → 累积）；推进游标。 */
-  consume(ticks: EventTick[]): void {
+  /** 消费一批 eventLog tick（拍平 eventsByRoom → 归因 → 累积）；推进游标。
+   *  返回本批 DESTROYED 归因明细（M6/S1；现有调用方忽略返回值，向后兼容）。 */
+  consume(ticks: EventTick[]): KillDetail[] {
+    const details: KillDetail[] = []
     for (const tick of ticks) {
       const flat: ArenaEvent[] = Object.values(tick.eventsByRoom ?? {}).flat()
-      for (const a of attributeTick(flat)) {
-        if (a.combat && a.killerUserId) {
-          this.kills.set(a.killerUserId, (this.kills.get(a.killerUserId) ?? 0) + 1)
+      for (const { objectId, attribution } of attributeTickDetailed(flat)) {
+        details.push({ tick: tick.tick, objectId, attribution })
+        if (attribution.combat && attribution.killerUserId) {
+          this.kills.set(attribution.killerUserId, (this.kills.get(attribution.killerUserId) ?? 0) + 1)
         }
-        if (a.ownerUserId) {
-          if (a.combat) {
-            this.losses.set(a.ownerUserId, (this.losses.get(a.ownerUserId) ?? 0) + 1)
+        if (attribution.ownerUserId) {
+          if (attribution.combat) {
+            this.losses.set(attribution.ownerUserId, (this.losses.get(attribution.ownerUserId) ?? 0) + 1)
           } else {
             // B1：无 ATTACK 匹配的老死/自杀/回收/降解不计 combat loss（核对用计数）
-            this.decayLosses.set(a.ownerUserId, (this.decayLosses.get(a.ownerUserId) ?? 0) + 1)
+            this.decayLosses.set(attribution.ownerUserId, (this.decayLosses.get(attribution.ownerUserId) ?? 0) + 1)
           }
         }
       }
     }
+    return details
   }
 
   /** 权重 kills:1 / losses:1（plan-M5 D5：不做变体参数化）。 */

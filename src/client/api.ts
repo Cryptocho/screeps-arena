@@ -1,7 +1,7 @@
 /** 前端 API 客户端（fetch + WS 订阅；不引状态库）。 */
-import type { MatchView, WorldSnapshot } from '../shared/types.js'
+import type { MatchView, ReplayView, WorldSnapshot } from '../shared/types.js'
 
-/** 对局历史行（M3/S4，GET /api/history 投影）。 */
+/** 对局历史行（M3/S4，GET /api/history 投影）。replay = 回放文件可读（M6/D6 入口可用性）。 */
 export interface HistoryView {
   id: string
   winner: { kind: string; seatId?: string } | null
@@ -11,12 +11,32 @@ export interface HistoryView {
   createdAt: number
   settledAt: number | null
   teardown: string
+  replay: boolean
 }
 
 export async function fetchHistory(): Promise<HistoryView[]> {
   const res = await fetch('/api/history')
   const body = (await res.json()) as { history: HistoryView[] }
   return body.history
+}
+
+/**
+ * 回放查询（M6/S3）：frames=false → `?frames=none`（只回 meta+summary，running 期轮询用）；
+ * from/to 由服务端裁剪。404 → null（入口禁用语义）。
+ */
+export async function fetchReplay(
+  id: string,
+  opts: { frames?: boolean; from?: number; to?: number } = {},
+): Promise<ReplayView | null> {
+  const q = new URLSearchParams()
+  if (opts.frames === false) q.set('frames', 'none')
+  if (opts.from !== undefined) q.set('from', String(opts.from))
+  if (opts.to !== undefined) q.set('to', String(opts.to))
+  const suffix = q.toString() === '' ? '' : `?${q.toString()}`
+  const res = await fetch(`/api/replays/${encodeURIComponent(id)}${suffix}`)
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(`replay ${id}: HTTP ${res.status}`)
+  return (await res.json()) as ReplayView
 }
 
 /** 锦标赛行（M4/D6，GET /api/tournaments 投影）。 */

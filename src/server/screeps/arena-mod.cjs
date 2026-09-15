@@ -262,6 +262,7 @@
     })
     if (allIds.length === 0) return Promise.resolve(eventsByRoom)
     var userById = {}
+    var infoById = {}
     return db['rooms.objects']
       .find({ _id: { $in: allIds } })
       .then(function (alive) {
@@ -269,8 +270,10 @@
         var aliveById = {}
         alive.forEach(function (o) { aliveById[o._id] = o })
         allIds.forEach(function (id) {
-          if (aliveById[id] !== undefined) userById[id] = aliveById[id].user != null ? aliveById[id].user : null
-          else missing.push(id)
+          if (aliveById[id] !== undefined) {
+            userById[id] = aliveById[id].user != null ? aliveById[id].user : null
+            infoById[id] = { x: aliveById[id].x, y: aliveById[id].y, type: aliveById[id].type, via: 'live' }
+          } else missing.push(id)
         })
         if (missing.length === 0) return
         // 被杀对象已移除 → tombstone（creep）与 ruin（structure）兜底，都在本集合
@@ -283,6 +286,9 @@
               if (t.creepId != null) {
                 tombFound[t.creepId] = true
                 userById[t.creepId] = t.user != null ? t.user : null
+                // M6/D1 type 取值链：tombstone 语义必为 creep（引擎 _die.js 无原 type 字段，
+                // 仅 creepBody——有原 type 字段则以之优先，防引擎变体）
+                infoById[t.creepId] = { x: t.x, y: t.y, type: typeof t.creepType === 'string' ? t.creepType : 'creep', via: 'tombstone' }
               }
             })
             missing.forEach(function (id) {
@@ -295,6 +301,9 @@
                 if (sid == null) return
                 var owner = r.structure && r.structure.user != null ? r.structure.user : r.user != null ? r.user : null
                 userById[sid] = owner
+                // M6/D1 type 取值链：ruin 把原 structure 挂在 structure 子档（_destroy.js L19-27）
+                var stype = r.structure && r.structure.type != null ? r.structure.type : 'unknown'
+                infoById[sid] = { x: r.x, y: r.y, type: stype, via: 'ruin' }
               })
             })
           })
@@ -310,6 +319,13 @@
             }
             if (ev.data && typeof ev.data.targetId === 'string') {
               out.targetUser = userById[ev.data.targetId] !== undefined ? userById[ev.data.targetId] : null
+            }
+            // M6/D1 enrich：位置/类型（只加字段，不改既有字段；解析不到 = null → 前端降级房级）
+            if (typeof ev.objectId === 'string') {
+              out.objectInfo = infoById[ev.objectId] !== undefined ? infoById[ev.objectId] : null
+            }
+            if (ev.data && typeof ev.data.targetId === 'string') {
+              out.targetInfo = infoById[ev.data.targetId] !== undefined ? infoById[ev.data.targetId] : null
             }
             return out
           })
@@ -1141,6 +1157,8 @@
           cursor: eventRing.length,
           bound: !eventRingFull,
           ringFull: eventRingFull,
+          // M6/D1：ring 容量随应答下发（summary 的 eventsIncomplete 标注用，避免 host 硬编码）
+          ringCapacity: EVENT_RING_MAX,
         })
       }
       case 'envProbe': {

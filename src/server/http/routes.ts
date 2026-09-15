@@ -46,6 +46,10 @@ export interface ArenaHttpServices {
   }>
   /** teardown 失败可查面（M3/D3；settle 后 machine 已删，errors 通道不可达）。 */
   teardownFailures?(): Array<{ matchId: string; seatId: string; error: string; at: number }>
+  /** 回放查询（M6/S3；可选——缺席时路由 404，dev/mock lane 无需实现）。undefined = 404。 */
+  replay?(matchId: string, opts: { from?: number; to?: number; frames: boolean }): Promise<unknown> | unknown
+  /** 回放数据可读性（M6/D6：历史表「战报」入口可用性；缺席视为不可用）。 */
+  replayExists?(matchId: string): boolean
   /** 锦标赛编排（M4/D6；可选——dev/mock lane 无需实现）。业务规则错误 throw → 400。 */
   createTournament?(input: { name?: string; participants: TournamentParticipant[]; matchConfig?: Partial<MatchConfig> }): Tournament
   tournaments?(): Tournament[]
@@ -220,7 +224,29 @@ export async function handleArenaRequest(services: ArenaHttpServices, req: Arena
 
   if (pathname === '/api/history') {
     if (method !== 'GET') return bad(405, `method ${method} not allowed`)
-    return ok({ history: services.history?.() ?? [] })
+    const rows = services.history?.() ?? []
+    // M6/D6：逐行标注回放可读性（与 history 本身解耦：文件缺失 → 前端按钮禁用）
+    return ok({ history: rows.map((h) => ({ ...h, replay: services.replayExists?.(h.id) ?? false })) })
+  }
+
+  const replayPath = /^\/api\/replays\/([^/]+)$/.exec(pathname)
+  if (replayPath) {
+    if (method !== 'GET') return bad(405, `method ${method} not allowed`)
+    const id = decodeURIComponent(replayPath[1]!)
+    if (!services.replay) return bad(404, `replay ${id} not found`)
+    const from = req.query?.from !== undefined ? Number(req.query.from) : undefined
+    const to = req.query?.to !== undefined ? Number(req.query.to) : undefined
+    // 数值校验：NaN 会静默裁剪成空集（客户端很难诊断），显式 400
+    if (from !== undefined && !Number.isFinite(from)) return bad(400, 'from must be a number')
+    if (to !== undefined && !Number.isFinite(to)) return bad(400, 'to must be a number')
+    const frames = req.query?.frames !== 'none' // ?frames=none → 只回 meta+summary（D4）
+    try {
+      const body = await services.replay(id, { from, to, frames })
+      if (body === undefined) return bad(404, `replay ${id} not found`)
+      return ok(body)
+    } catch (err) {
+      return bad(502, String(err instanceof Error ? err.message : err))
+    }
   }
 
   if (pathname === '/api/teardown-failures') {

@@ -2,8 +2,15 @@
 
 Screeps 斗蛐蛐独立程序：**对局参与者只能是 Agent（LLM 会话）**，多个 Agent 各自提交代码，在同一世界里对抗；人类只有旁观视角（大厅/地图/console 流），不进对局、不指挥、不参与。本仓库自 `dsh-screeps`（DSH 插件）切割独立，旧仓库全部重要文档与源码存档于 `reference/`（**只读参考，不参与构建**）。
 
-## 当前状态（2026-09-14，M5 关闭）
+## 当前状态（2026-09-15，M6 实施完成）
 
+- **M6 回放/战报已实施（2026-09-15）**：记录器 + 查询面 + 前端战报区/回放器全部落地——
+  mod enrich（`objectInfo/targetInfo`：x/y/type/via 兜底链 live/tombstone/ruin）、
+  `KillLedger.consume` 归因明细、`MatchRecorder`（append-only JSONL；混跑按房名过滤、
+  (tick,objectId) 去重、软上限降频、恢复续写 + `recovered` mark）、`ReplayStore`
+  （stat/mtime 失效 + LRU 4；404/partial/`eventsIncomplete`/`incompleteAfterRestart` 派生）、
+  `GET /api/replays/:matchId`（`?frames=none`/`?from=&to=`）、driver `worldObserve` 相位门控、
+  compose 第 6 卷 `arena-replays`。S0 探针（ring/enrich 两相位）实测钉死前提后已按计划清理。
 - **M6 前浏览器全链实测绿（2026-09-14）**：真实私服 + 真实 qwen Agent 在浏览器走完整链
   （直建 arena 局 → 交码 → 自动开局 → 观战 → ticksExhausted 结算 → 历史表）两局全绿；
   实测暴露并修复三洞（1047583 + 784ce76 + 489ea9f，审查闭环复审 PASS）：① 直建局初始
@@ -42,7 +49,7 @@ Screeps 斗蛐蛐独立程序：**对局参与者只能是 Agent（LLM 会话）
   重掷（arenaProbe 对称断言代替 distance 校验）；初始/状态唤醒零跨局信息（M4 红线沿用）；
   混跑期 world 局 tick 被同步 150ms（全局单值 tick 耦合，R7/n1 已知行为）；世界库
   需剔除 Invader（已由 resetArena 清场链覆盖）。
-- **M6+**：回放/战报详情、2v2 双房、击杀分到 T 变体、房间可见性精确化、跨容器拆分评估、
+- **M7+**：2v2 双房、击杀分到 T 变体、房间可见性精确化、跨容器拆分评估、
   表现层统一收尾（用户决策：不并入功能里程碑）。
 - **M2/M3 能力**（仍有效）：真实计分（tiebreak creeps→rooms→rclTotal）、WS console 流、
   interrupted 恢复、地图公平性重掷、seatSlug 碰撞加固、compose 容器化+数据卷、
